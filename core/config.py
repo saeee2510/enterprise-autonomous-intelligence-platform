@@ -12,7 +12,7 @@ class Config:
     # DATABASE CONFIG
     # =========================
     POSTGRES_HOST: str = os.getenv("POSTGRES_HOST", "localhost")
-    POSTGRES_PORT: int = int(os.getenv("POSTGRES_PORT", 5432))
+    POSTGRES_PORT: int = int(os.getenv("POSTGRES_PORT", 5450))
     POSTGRES_DB: str = os.getenv("POSTGRES_DB", "eaip")
     POSTGRES_USER: str = os.getenv("POSTGRES_USER", "postgres")
     POSTGRES_PASSWORD: str = os.getenv("POSTGRES_PASSWORD", "postgres")
