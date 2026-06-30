@@ -1,0 +1,18 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: eaip_postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: eaip
+    ports:
+      - "5450:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./../database/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+
+volumes:
+  pgdata:
