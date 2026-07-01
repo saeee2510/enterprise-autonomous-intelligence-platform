@@ -8,7 +8,6 @@ from pgvector.psycopg2 import register_vector
 # ENV + CLIENT
 # -----------------------------
 load_dotenv()
-
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 conn = psycopg2.connect(
@@ -21,38 +20,6 @@ conn = psycopg2.connect(
 register_vector(conn)
 cur = conn.cursor()
 
-# -----------------------------
-# TOOLS (future agent upgrade)
-# -----------------------------
-TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "run_sql",
-            "description": "Run SQL aggregation queries on support tickets",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query_type": {"type": "string"}
-                }
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "vector_search",
-            "description": "Semantic search over enterprise documents",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string"}
-                },
-                "required": ["query"]
-            }
-        }
-    }
-]
 
 # -----------------------------
 # EMBEDDINGS
@@ -66,9 +33,52 @@ def get_embedding(text: str):
 
 
 # -----------------------------
-# VECTOR SEARCH
+# HYBRID RERANKING 
 # -----------------------------
-def retrieve(query, top_k=5):
+def hybrid_score(text, query):
+    text_l = text.lower()
+    query_l = query.lower()
+
+    score = 0
+
+    # -------------------------
+    # 1. EXACT PHRASE MATCH BOOST
+    # -------------------------
+    if query_l in text_l:
+        score += 10
+
+    # -------------------------
+    # 2. STRONG DOMAIN INTENT BOOST
+    # -------------------------
+    strong_terms = {
+        "duplicate charge": 8,
+        "refund": 4,
+        "escalation": 3,
+        "not received": 5,
+        "billing": 3,
+        "escalated": 3
+    }
+
+    for term, weight in strong_terms.items():
+        if term in text_l and term in query_l:
+            score += weight
+
+    # -------------------------
+    # 3. TOKEN OVERLAP
+    # -------------------------
+    query_words = query_l.split()
+
+    for w in query_words:
+        if w in text_l:
+            score += 1
+
+    return score
+
+
+# -----------------------------
+# VECTOR RETRIEVAL
+# -----------------------------
+def retrieve(query, top_k=8):
     embedding = get_embedding(query)
 
     cur.execute(
@@ -78,7 +88,7 @@ def retrieve(query, top_k=5):
         ORDER BY embedding <-> %s::vector
         LIMIT %s;
         """,
-        (embedding, top_k)
+        (embedding, top_k * 2)
     )
 
     rows = cur.fetchall()
@@ -90,35 +100,39 @@ def retrieve(query, top_k=5):
         print("Dept:", r[2])
         print("Content:", r[0][:200])
 
-    return rows
+    # -----------------------------
+    # RERANK STEP (NEW)
+    # -----------------------------
+    ranked = sorted(
+        rows,
+        key=lambda r: hybrid_score(r[0], query),
+        reverse=True
+    )
+
+    return ranked[:top_k]
 
 
 # -----------------------------
-# BUILD CONTEXT
+# CONTEXT BUILDER
 # -----------------------------
 def build_context(rows):
     if not rows:
         return ""
 
-    context = ""
-    for i, (content, source, dept) in enumerate(rows, 1):
-        context += f"""
-DOCUMENT {i}
-SOURCE: {source}
-DEPARTMENT: {dept}
-
+    return "\n\n".join([
+        f"""DOCUMENT {i+1}
+SOURCE: {r[1]}
+DEPARTMENT: {r[2]}
 CONTENT:
-{content}
-
--------------------------
-"""
-    return context
+{r[0]}"""
+        for i, r in enumerate(rows)
+    ])
 
 
 # -----------------------------
-# SQL CONTEXT
+# SQL TOOL
 # -----------------------------
-def get_sql_context():
+def run_sql():
     cur.execute("""
         SELECT category, COUNT(*)
         FROM support_tickets
@@ -127,38 +141,40 @@ def get_sql_context():
 
     rows = cur.fetchall()
 
-    text = "Ticket volume by category:\n"
-    for r in rows:
-        text += f"- {r[0]}: {r[1]}\n"
-
-    return text
+    return "\n".join([f"{r[0]}: {r[1]}" for r in rows])
 
 
 # -----------------------------
-# ROUTER
+# TOOL EXECUTOR (HYBRID ROUTING)
 # -----------------------------
-def route_query(query):
-    q = query.lower()
+def execute_tools(query):
+    context_parts = []
 
-    if "how many" in q or "count" in q:
-        return "sql"
-    return "hybrid"
+    # ALWAYS vector search
+    vector_docs = retrieve(query)
+    context_parts.append("[UNSTRUCTURED]")
+    context_parts.append(build_context(vector_docs))
+
+    # CONDITIONAL SQL
+    if any(x in query.lower() for x in ["how many", "count", "trend", "volume"]):
+        context_parts.append("\n[STRUCTURED]")
+        context_parts.append(run_sql())
+
+    return "\n".join(context_parts)
 
 
 # -----------------------------
-# GPT ANSWER GENERATION
+# LLM ANSWER GENERATION
 # -----------------------------
 def generate_answer(query, context):
 
     if not context.strip():
-        return "No relevant context found in database."
+        return "No relevant context found."
 
     prompt = f"""
-You are an Enterprise AI Operations Analyst.
+You are an Enterprise AI Analyst.
 
-Answer ONLY using the provided context.
-
-Do NOT use markdown, bold text, or special characters.
+Use ONLY the provided context.
 
 Structure:
 
@@ -166,12 +182,10 @@ Main Issue:
 ...
 
 Evidence:
-- ...
-- ...
+...
 
 Recommended Actions:
-- ...
-- ...
+...
 
 CONTEXT:
 {context}
@@ -183,7 +197,7 @@ QUESTION:
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": "You are a precise enterprise AI analyst."},
+            {"role": "system", "content": "You are a precise enterprise analyst."},
             {"role": "user", "content": prompt}
         ]
     )
@@ -195,35 +209,15 @@ QUESTION:
 # MAIN PIPELINE
 # -----------------------------
 def ask(query: str):
-
-    mode = route_query(query)
-
-    if mode == "sql":
-        context = get_sql_context()
-
-    else:
-        vector_docs = retrieve(query)
-        vector_context = build_context(vector_docs)
-
-        sql_context = get_sql_context()
-
-        context = f"""
-[STRUCTURED DATA]
-{sql_context}
-
-[UNSTRUCTURED DATA]
-{vector_context}
-"""
-
+    context = execute_tools(query)
     answer = generate_answer(query, context)
 
     print("\nAI ANSWER\n")
     print(answer)
-    print("MODE:", mode)
 
 
 # -----------------------------
-# CLI ENTRY
+# CLI
 # -----------------------------
 if __name__ == "__main__":
     query = input("Ask EAIP: ")
