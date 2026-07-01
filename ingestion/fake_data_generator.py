@@ -1,7 +1,7 @@
 import random
 from faker import Faker
-from datetime import datetime
 from ingestion.business_events import BusinessEvents
+from datetime import datetime, timedelta
 
 fake = Faker()
 events = BusinessEvents()
@@ -60,18 +60,21 @@ def generate_orders(customers, products, n=1000):
 # -----------------------------
 # SUPPORT TICKETS (event-driven)
 # -----------------------------
-def generate_support_tickets(n=300):
+
+
+from datetime import datetime, timedelta
+import random
+
+def generate_support_tickets(n=200):
     tickets = []
 
     for _ in range(n):
-        event = random.choice(["bug", "billing", "performance"])
-
         tickets.append((
-            random.randint(1, 200),
-            random.choice(["low", "medium", "high", "critical"]),
-            event,
-            datetime.now(),
-            random.randint(1, 72)
+            random.randint(1, 200),                       # customer_id
+            random.choice(["low", "medium", "high"]),     # severity
+            "refunds",                                    # category
+            datetime.now() - timedelta(days=random.randint(1, 30)),
+            random.randint(1, 72)                         # resolution_time
         ))
 
     return tickets

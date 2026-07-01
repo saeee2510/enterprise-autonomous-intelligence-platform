@@ -1,10 +1,11 @@
-import psycopg2
+import os
 import uuid
 from datetime import datetime
-from faker import Faker
 
+import psycopg2
 from dotenv import load_dotenv
-import os
+from faker import Faker
+from openai import OpenAI
 
 load_dotenv()
 
@@ -25,42 +26,76 @@ cur = conn.cursor()
 # -----------------------------
 # STEP 1: Generate fake documents
 # -----------------------------
-def generate_documents(n=50):
+def generate_documents():
     docs = []
 
-    for _ in range(n):
-        doc_type = fake.random_element(
-            elements=["email", "support", "release_notes"]
-        )
-
-        if doc_type == "email":
-            text = f"""
-            Customer email: {fake.sentence()}
-            Issue: {fake.paragraph()}
+    refund_docs = [
+        (
             """
-            source = "email_system"
-            dept = "customer_success"
+Customer complaint:
+Refund not received after order cancellation.
 
-        elif doc_type == "support":
-            text = f"""
-            Support ticket:
-            {fake.paragraph()}
-            Resolution notes:
-            {fake.paragraph()}
+Details:
+Customer has waited 14 days for the refund.
+Order status shows refunded, but the bank account has not been credited.
+
+Resolution:
+Escalated to billing operations.
+""",
+            "support_system",
+            "support"
+        ),
+        (
             """
-            source = "support_system"
-            dept = "support"
+Customer complaint:
+Duplicate charge detected.
 
-        else:
-            text = f"""
-            Release Notes:
-            {fake.paragraph()}
-            Bug fixes and improvements included.
+Details:
+Customer was charged twice for the same purchase.
+Refund request submitted immediately.
+
+Resolution:
+Finance team investigating duplicate transaction.
+""",
+            "support_system",
+            "support"
+        ),
+        (
             """
-            source = "engineering"
-            dept = "product"
+Customer email:
 
-        docs.append((str(uuid.uuid4()), text, source, dept))
+I cancelled my order last week but still haven't received my refund.
+Please help resolve this issue.
+
+Resolution:
+Pending review.
+""",
+            "email_system",
+            "customer_success"
+        ),
+        (
+            """
+Release Notes
+
+Refund processing latency reduced by 40%.
+
+Improved billing reconciliation and duplicate payment detection.
+""",
+            "engineering",
+            "product"
+        ),
+    ]
+
+    # Create 50 docs by repeating templates
+    for i in range(50):
+        content, source, dept = refund_docs[i % len(refund_docs)]
+
+        docs.append((
+            str(uuid.uuid4()),
+            content,
+            source,
+            dept
+        ))
 
     return docs
 
