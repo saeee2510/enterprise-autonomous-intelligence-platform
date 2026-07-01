@@ -5,7 +5,7 @@ from openai import OpenAI
 from pgvector.psycopg2 import register_vector
 
 # -----------------------------
-# ENV + CLIENT SETUP
+# ENV + CLIENT
 # -----------------------------
 load_dotenv()
 
@@ -21,6 +21,38 @@ conn = psycopg2.connect(
 register_vector(conn)
 cur = conn.cursor()
 
+# -----------------------------
+# TOOLS (future agent upgrade)
+# -----------------------------
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "run_sql",
+            "description": "Run SQL aggregation queries on support tickets",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query_type": {"type": "string"}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "vector_search",
+            "description": "Semantic search over enterprise documents",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"}
+                },
+                "required": ["query"]
+            }
+        }
+    }
+]
 
 # -----------------------------
 # EMBEDDINGS
@@ -34,7 +66,7 @@ def get_embedding(text: str):
 
 
 # -----------------------------
-# RETRIEVE (VECTOR SEARCH)
+# VECTOR SEARCH
 # -----------------------------
 def retrieve(query, top_k=5):
     embedding = get_embedding(query)
@@ -51,7 +83,6 @@ def retrieve(query, top_k=5):
 
     rows = cur.fetchall()
 
-    # 🔍 DEBUG: show what retrieval is actually returning
     print("\n--- DEBUG: Retrieved Documents ---")
     for i, r in enumerate(rows, 1):
         print(f"\nDoc {i}")
@@ -70,7 +101,6 @@ def build_context(rows):
         return ""
 
     context = ""
-
     for i, (content, source, dept) in enumerate(rows, 1):
         context += f"""
 DOCUMENT {i}
@@ -82,12 +112,41 @@ CONTENT:
 
 -------------------------
 """
-
     return context
 
 
 # -----------------------------
-# GENERATE ANSWER (GPT)
+# SQL CONTEXT
+# -----------------------------
+def get_sql_context():
+    cur.execute("""
+        SELECT category, COUNT(*)
+        FROM support_tickets
+        GROUP BY category
+    """)
+
+    rows = cur.fetchall()
+
+    text = "Ticket volume by category:\n"
+    for r in rows:
+        text += f"- {r[0]}: {r[1]}\n"
+
+    return text
+
+
+# -----------------------------
+# ROUTER
+# -----------------------------
+def route_query(query):
+    q = query.lower()
+
+    if "how many" in q or "count" in q:
+        return "sql"
+    return "hybrid"
+
+
+# -----------------------------
+# GPT ANSWER GENERATION
 # -----------------------------
 def generate_answer(query, context):
 
@@ -97,14 +156,11 @@ def generate_answer(query, context):
     prompt = f"""
 You are an Enterprise AI Operations Analyst.
 
-Answer using ONLY the retrieved documents.
+Answer ONLY using the provided context.
 
-Return your answer in plain text only.
+Do NOT use markdown, bold text, or special characters.
 
-Do NOT use markdown formatting.
-Do NOT use asterisks, bold text, or special symbols.
-
-Structure your response exactly like this:
+Structure:
 
 Main Issue:
 ...
@@ -112,16 +168,12 @@ Main Issue:
 Evidence:
 - ...
 - ...
-- ...
 
 Recommended Actions:
 - ...
 - ...
-- ...
 
-If the documents are insufficient, say so clearly.
-
-DOCUMENTS:
+CONTEXT:
 {context}
 
 QUESTION:
@@ -131,7 +183,7 @@ QUESTION:
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": "You are a helpful enterprise AI assistant."},
+            {"role": "system", "content": "You are a precise enterprise AI analyst."},
             {"role": "user", "content": prompt}
         ]
     )
@@ -140,20 +192,38 @@ QUESTION:
 
 
 # -----------------------------
-# PIPELINE
+# MAIN PIPELINE
 # -----------------------------
 def ask(query: str):
-    docs = retrieve(query)
-    context = build_context(docs)
+
+    mode = route_query(query)
+
+    if mode == "sql":
+        context = get_sql_context()
+
+    else:
+        vector_docs = retrieve(query)
+        vector_context = build_context(vector_docs)
+
+        sql_context = get_sql_context()
+
+        context = f"""
+[STRUCTURED DATA]
+{sql_context}
+
+[UNSTRUCTURED DATA]
+{vector_context}
+"""
 
     answer = generate_answer(query, context)
 
-    print("\n AI ANSWER\n")
+    print("\nAI ANSWER\n")
     print(answer)
+    print("MODE:", mode)
 
 
 # -----------------------------
-# CLI
+# CLI ENTRY
 # -----------------------------
 if __name__ == "__main__":
     query = input("Ask EAIP: ")
