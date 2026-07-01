@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+pgvector/
+
+# Environment
+.env
+.env.local
+
+# Mac
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Python virtual env
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Local DB / dumps
+*.sqlite
+*.db

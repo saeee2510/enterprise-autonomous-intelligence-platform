@@ -8,8 +8,8 @@ from ingestion.fake_data_generator import (
 
 conn = psycopg2.connect(
     dbname="eaip",
-    user="postgres",
-    password="Shm@2510",
+    user="saee2510",
+    password="None",
     host="127.0.0.1",
     port=5432
 )
