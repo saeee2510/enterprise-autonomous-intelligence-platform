@@ -4,9 +4,8 @@ import numpy as np
 from dotenv import load_dotenv
 from openai import OpenAI
 from pgvector.psycopg2 import register_vector
-from core.router import route_query
-from core.planner import route_query
-from core.sql_agent import execute_sql_plan
+
+from core.planner import route_query   
 
 # -----------------------------
 # ENV + CLIENT
@@ -27,7 +26,7 @@ cur = conn.cursor()
 
 DEBUG = False
 
-results = execute_sql_plan(plan)
+
 # -----------------------------
 # EMBEDDINGS
 # -----------------------------
@@ -127,7 +126,6 @@ def mmr_rerank(query, query_embedding, docs, lambda_=0.7, k=5):
     doc_emb_map = {d[0]: d[3] for d in docs}
 
     for _ in range(min(k, len(candidates))):
-
         best_doc = None
         best_score = -1
 
@@ -141,8 +139,7 @@ def mmr_rerank(query, query_embedding, docs, lambda_=0.7, k=5):
                 diversity = 0
             else:
                 diversity = max(
-                    cosine_sim(query_embedding, doc_emb_map[s[0]])
-                    for s in selected
+                    cosine_sim(doc[3], d[3]) for d in selected
                 )
 
             score = lambda_ * relevance - (1 - lambda_) * diversity
@@ -164,7 +161,7 @@ def build_context(rows):
     if not rows:
         return ""
 
-    return "\n".join([
+    return "\n\n".join([
         f"""
 DOCUMENT {i+1}
 SOURCE: {r[1]}
@@ -178,13 +175,11 @@ CONTENT:
 
 
 # -----------------------------
-# SQL TOOL (STRUCTURED OUTPUT ONLY)
+# SQL TOOL
 # -----------------------------
 def run_sql(query: str = None):
-
     q = (query or "").lower()
 
-    # specific metric path
     if "refund" in q and ("how many" in q or "count" in q):
         cur.execute("""
             SELECT COUNT(*)
@@ -198,7 +193,6 @@ def run_sql(query: str = None):
             "unit": "tickets"
         }
 
-    # fallback aggregation
     cur.execute("""
         SELECT category, COUNT(*)
         FROM support_tickets
@@ -212,65 +206,7 @@ def run_sql(query: str = None):
 
 
 # -----------------------------
-# TOOL EXECUTION (SINGLE SOURCE OF TRUTH)
-# -----------------------------
-def execute_tools(query, route):
-
-    docs, q_emb = retrieve_candidates(query)
-    reranked = mmr_rerank(query, q_emb, docs)
-
-    context = {
-        "unstructured": build_context(reranked),
-        "structured": None
-    }
-
-    if route == "sql":
-        context["structured"] = run_sql(query)
-
-    elif route == "hybrid":
-        context["structured"] = run_sql(query)
-
-    return context
-
-
-# -----------------------------
-# LLM
-# -----------------------------
-def generate_answer(query, context):
-
-    prompt = f"""
-You are an Enterprise AI Analyst.
-
-RULES:
-- Structured data is ground truth
-- Do NOT infer numbers
-- Use only provided context
-
-CONTEXT:
-{context}
-
-QUESTION:
-{query}
-
-FORMAT:
-Main Issue
-Evidence
-Recommendations
-"""
-
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": "Precise enterprise analyst. No hallucination."},
-            {"role": "user", "content": prompt}
-        ]
-    )
-
-    return response.choices[0].message.content
-
-
-# -----------------------------
-# MAIN
+# PIPELINE
 # -----------------------------
 def ask(query: str):
 
@@ -288,14 +224,46 @@ def ask(query: str):
 
         elif step["tool"] == "retrieval":
             docs, _ = retrieve_candidates(query)
-            context_parts.append(build_context(docs))
+            reranked = mmr_rerank(query, _, docs)
+            context_parts.append(build_context(reranked))
 
-    context = "\n\n".join(context_parts)
+    context = "\n\n".join(
+        [str(c) for c in context_parts]
+    )
 
-    answer = generate_answer(query, context)
+    # -----------------------------
+    # LLM
+    # -----------------------------
+    prompt = f"""
+You are an Enterprise AI Analyst.
+
+RULES:
+- Use ONLY provided context
+- Structured data is ground truth
+- Do NOT hallucinate numbers
+
+CONTEXT:
+{context}
+
+QUESTION:
+{query}
+
+FORMAT:
+Main Issue
+Evidence
+Recommendations
+"""
+
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": "Precise enterprise analyst."},
+            {"role": "user", "content": prompt}
+        ]
+    )
 
     print("\nAI ANSWER\n")
-    print(answer)
+    print(response.choices[0].message.content)
 
 
 # -----------------------------
