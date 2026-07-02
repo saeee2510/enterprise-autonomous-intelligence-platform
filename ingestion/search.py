@@ -6,6 +6,8 @@ from openai import OpenAI
 from pgvector.psycopg2 import register_vector
 from core.router import route_query
 from core.planner import route_query
+from core.sql_agent import execute_sql_plan
+
 # -----------------------------
 # ENV + CLIENT
 # -----------------------------
@@ -25,7 +27,7 @@ cur = conn.cursor()
 
 DEBUG = False
 
-
+results = execute_sql_plan(plan)
 # -----------------------------
 # EMBEDDINGS
 # -----------------------------
