@@ -1,12 +1,14 @@
 import os
 import psycopg2
+import numpy as np
 from dotenv import load_dotenv
 from openai import OpenAI
+from pgvector.psycopg2 import register_vector
 
-DEBUG = False
-
+# -----------------------------
+# ENV + CLIENT
+# -----------------------------
 load_dotenv()
-
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 conn = psycopg2.connect(
@@ -16,12 +18,30 @@ conn = psycopg2.connect(
     port=5432
 )
 
+register_vector(conn)
 cur = conn.cursor()
 
+DEBUG = False
 
-# =============================
+# -----------------------------
+# DEDUPLICATION
+# -----------------------------
+def deduplicate_docs(rows):
+    seen = set()
+    unique = []
+
+    for r in rows:
+        key = r[0][:150].strip().lower()
+        if key not in seen:
+            seen.add(key)
+            unique.append(r)
+
+    return unique
+
+
+# -----------------------------
 # EMBEDDINGS
-# =============================
+# -----------------------------
 def get_embedding(text: str):
     response = client.embeddings.create(
         model="text-embedding-3-small",
@@ -30,156 +50,219 @@ def get_embedding(text: str):
     return response.data[0].embedding
 
 
-# =============================
-# INTENT CLASSIFICATION
-# =============================
-def classify_doc(text):
-    t = text.lower()
-
-    if "duplicate charge" in t:
-        return "billing_error"
-
-    if "refund not received" in t or "refund" in t:
-        return "refund_issue"
-
-    if "release notes" in t or "improved" in t:
-        return "engineering"
-
-    if "email" in t:
-        return "customer_email"
-
-    return "other"
-
-
-def query_intent(query):
-    q = query.lower()
-
-    if "duplicate" in q and "charge" in q:
-        return "billing_error"
-
-    if "refund" in q:
-        return "refund_issue"
-
-    if "escalation" in q:
-        return "support_priority"
-
-    return "general"
-
-
-# =============================
-# HYBRID SCORING
-# =============================
+# -----------------------------
+# HYBRID SCORE
+# -----------------------------
 def hybrid_score(text, query):
     text_l = text.lower()
+    query_l = query.lower()
 
-    q_intent = query_intent(query)
-    d_intent = classify_doc(text)
+    score = 0.0
 
-    score = 0
-
-    # INTENT MATCH (most important)
-    if q_intent == d_intent:
+    if query_l in text_l:
         score += 10
 
-    # exact phrase match
-    if query.lower() in text_l:
-        score += 8
+    strong_terms = {
+        "refund": 3,
+        "duplicate": 5,
+        "charge": 3,
+        "escalated": 4,
+        "delay": 3,
+        "not received": 5,
+        "billing": 2
+    }
 
-    # keyword overlap
-    for w in query.lower().split():
-        if w in text_l:
-            score += 1
+    for term, weight in strong_terms.items():
+        if term in text_l:
+            score += weight
+
+    overlap = len(set(query_l.split()) & set(text_l.split()))
+    score += overlap * 1.5
 
     return score
 
 
-# =============================
-# VECTOR SEARCH
-# =============================
-def search_documents(query, top_k=5):
-    embedding = get_embedding(query)
+# -----------------------------
+# VECTOR RETRIEVAL (FIXED)
+# -----------------------------
+def retrieve_candidates(query, top_k=10):
+    query_embedding = get_embedding(query)
 
     cur.execute(
         """
-        SELECT content, source, department
+        SELECT content, source, department, embedding
         FROM documents
         ORDER BY embedding <-> %s::vector
-        LIMIT 20;
+        LIMIT %s;
         """,
-        (embedding,)
+        (query_embedding, top_k * 3)
     )
 
     rows = cur.fetchall()
 
-    # -----------------------------
-    # DEBUG 
-    # -----------------------------
     if DEBUG:
-        print("\n🔍 TOP RESULTS (RAW VECTOR)\n")
+        print("\n--- RAW RESULTS ---")
+        for r in rows:
+            print(r[1], r[2], r[0][:80])
 
-    if DEBUG:
-        for i, (content, source, department) in enumerate(rows, 1):
-            print(f"\nRaw {i}")
-            print("-" * 40)
-            print("Source:", source)
-            print("Dept:", department)
-            print("Content:", content[:200])
+    rows = deduplicate_docs(rows)
 
-    # -----------------------------
-    # RERANKING
-    # -----------------------------
-    scored = []
-    for r in rows:
-        score = hybrid_score(r[0], query)
-        scored.append((score, r))
-
-    scored.sort(reverse=True, key=lambda x: x[0])
-
-    ranked_rows = [r for _, r in scored]
-
-    # -----------------------------
-    # FINAL OUTPUT
-    # -----------------------------
-    if DEBUG:
-        print("\nTOP RESULTS (DIRECT VECTOR)\n")
-    
-
-    for i, (content, source, department) in enumerate(ranked_rows[:top_k], 1):
-        print(f"\nResult {i}")
-        print("-" * 40)
-        print("Source:", source)
-        print("Department:", department)
-        print("Content:", content[:250])
+    return rows, query_embedding
 
 
-# =============================
-# OPTIONAL TEST
-# =============================
-def test_query_search():
-    query = "refund not received"
+# -----------------------------
+# MMR RERANKING (FIXED)
+# -----------------------------
+def cosine_sim(a, b):
+    a = np.array(a)
+    b = np.array(b)
+    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
 
-    embedding = get_embedding(query)
 
+def mmr_rerank(query, query_embedding, docs, lambda_=0.7, k=5):
+    selected = []
+    candidates = docs.copy()
+
+    doc_embeddings = {
+        d[0]: d[3] for d in docs  # content -> embedding
+    }
+
+    for _ in range(min(k, len(candidates))):
+        best_doc = None
+        best_score = -1
+
+        for doc in candidates:
+            if doc in selected:
+                continue
+
+            content = doc[0]
+
+            relevance = hybrid_score(content, query)
+
+            if not selected:
+                diversity = 0
+            else:
+                diversity = max(
+                    cosine_sim(query_embedding, doc_embeddings[s[0]])
+                    for s in selected
+                )
+
+            score = lambda_ * relevance - (1 - lambda_) * diversity
+
+            if score > best_score:
+                best_score = score
+                best_doc = doc
+
+        if best_doc:
+            selected.append(best_doc)
+
+    return selected
+
+
+# -----------------------------
+# CONTEXT BUILDER
+# -----------------------------
+def build_context(rows):
+    if not rows:
+        return ""
+
+    return "\n\n".join([
+        f"""
+DOCUMENT {i+1}
+SOURCE: {r[1]}
+DEPARTMENT: {r[2]}
+
+CONTENT:
+{r[0]}
+"""
+        for i, r in enumerate(rows)
+    ])
+
+
+# -----------------------------
+# SQL TOOL
+# -----------------------------
+def run_sql():
     cur.execute("""
-        SELECT content
-        FROM documents
-        ORDER BY embedding <-> %s::vector
-        LIMIT 3;
-    """, (embedding,))
+        SELECT category, COUNT(*)
+        FROM support_tickets
+        GROUP BY category
+    """)
 
     rows = cur.fetchall()
-
-    print("\nTOP RESULTS (DIRECT VECTOR)\n")
-    for i, r in enumerate(rows, 1):
-        print(f"{i}. {r[0][:200]}\n")
+    return "\n".join([f"{r[0]}: {r[1]}" for r in rows])
 
 
-# =============================
-# RUN
-# =============================
+# -----------------------------
+# PIPELINE
+# -----------------------------
+def execute_tools(query):
+    docs, query_embedding = retrieve_candidates(query)
+
+    reranked = mmr_rerank(query, query_embedding, docs)
+
+    context = []
+    context.append("[UNSTRUCTURED]")
+    context.append(build_context(reranked))
+
+    if any(x in query.lower() for x in ["how many", "count", "trend", "volume"]):
+        context.append("\n[STRUCTURED]")
+        context.append(run_sql())
+
+    return "\n".join(context)
+
+
+# -----------------------------
+# GPT GENERATION
+# -----------------------------
+def generate_answer(query, context):
+
+    prompt = f"""
+You are an Enterprise AI Analyst.
+
+Use ONLY the provided context.
+
+Main Issue:
+...
+
+Evidence:
+...
+
+Recommended Actions:
+...
+
+CONTEXT:
+{context}
+
+QUESTION:
+{query}
+"""
+
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": "You are a precise enterprise analyst."},
+            {"role": "user", "content": prompt}
+        ]
+    )
+
+    return response.choices[0].message.content
+
+
+# -----------------------------
+# MAIN
+# -----------------------------
+def ask(query: str):
+    context = execute_tools(query)
+    answer = generate_answer(query, context)
+
+    print("\nAI ANSWER\n")
+    print(answer)
+
+
+# -----------------------------
+# CLI
+# -----------------------------
 if __name__ == "__main__":
-    q = input("Enter query: ")
-    search_documents(q)
-
-    # optional debug run
-    test_query_search()
+    query = input("Ask EAIP: ")
+    ask(query)
