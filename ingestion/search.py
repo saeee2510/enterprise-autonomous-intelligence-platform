@@ -4,11 +4,13 @@ import numpy as np
 from dotenv import load_dotenv
 from openai import OpenAI
 from pgvector.psycopg2 import register_vector
+from core.router import route_query
 
 # -----------------------------
 # ENV + CLIENT
 # -----------------------------
 load_dotenv()
+
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 conn = psycopg2.connect(
@@ -23,8 +25,20 @@ cur = conn.cursor()
 
 DEBUG = False
 
+
 # -----------------------------
-# DEDUPLICATION
+# EMBEDDINGS
+# -----------------------------
+def get_embedding(text: str):
+    response = client.embeddings.create(
+        model="text-embedding-3-small",
+        input=text
+    )
+    return response.data[0].embedding
+
+
+# -----------------------------
+# DEDUP
 # -----------------------------
 def deduplicate_docs(rows):
     seen = set()
@@ -40,17 +54,6 @@ def deduplicate_docs(rows):
 
 
 # -----------------------------
-# EMBEDDINGS
-# -----------------------------
-def get_embedding(text: str):
-    response = client.embeddings.create(
-        model="text-embedding-3-small",
-        input=text
-    )
-    return response.data[0].embedding
-
-
-# -----------------------------
 # HYBRID SCORE
 # -----------------------------
 def hybrid_score(text, query):
@@ -62,7 +65,7 @@ def hybrid_score(text, query):
     if query_l in text_l:
         score += 10
 
-    strong_terms = {
+    weights = {
         "refund": 3,
         "duplicate": 5,
         "charge": 3,
@@ -72,21 +75,20 @@ def hybrid_score(text, query):
         "billing": 2
     }
 
-    for term, weight in strong_terms.items():
+    for term, w in weights.items():
         if term in text_l:
-            score += weight
+            score += w
 
-    overlap = len(set(query_l.split()) & set(text_l.split()))
-    score += overlap * 1.5
+    score += len(set(query_l.split()) & set(text_l.split())) * 1.5
 
     return score
 
 
 # -----------------------------
-# VECTOR RETRIEVAL (FIXED)
+# RETRIEVAL
 # -----------------------------
 def retrieve_candidates(query, top_k=10):
-    query_embedding = get_embedding(query)
+    embedding = get_embedding(query)
 
     cur.execute(
         """
@@ -95,23 +97,17 @@ def retrieve_candidates(query, top_k=10):
         ORDER BY embedding <-> %s::vector
         LIMIT %s;
         """,
-        (query_embedding, top_k * 3)
+        (embedding, top_k * 3)
     )
 
     rows = cur.fetchall()
-
-    if DEBUG:
-        print("\n--- RAW RESULTS ---")
-        for r in rows:
-            print(r[1], r[2], r[0][:80])
-
     rows = deduplicate_docs(rows)
 
-    return rows, query_embedding
+    return rows, embedding
 
 
 # -----------------------------
-# MMR RERANKING (FIXED)
+# COSINE SIM
 # -----------------------------
 def cosine_sim(a, b):
     a = np.array(a)
@@ -119,15 +115,17 @@ def cosine_sim(a, b):
     return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
 
 
+# -----------------------------
+# MMR RERANK
+# -----------------------------
 def mmr_rerank(query, query_embedding, docs, lambda_=0.7, k=5):
     selected = []
     candidates = docs.copy()
 
-    doc_embeddings = {
-        d[0]: d[3] for d in docs  # content -> embedding
-    }
+    doc_emb_map = {d[0]: d[3] for d in docs}
 
     for _ in range(min(k, len(candidates))):
+
         best_doc = None
         best_score = -1
 
@@ -135,15 +133,13 @@ def mmr_rerank(query, query_embedding, docs, lambda_=0.7, k=5):
             if doc in selected:
                 continue
 
-            content = doc[0]
-
-            relevance = hybrid_score(content, query)
+            relevance = hybrid_score(doc[0], query)
 
             if not selected:
                 diversity = 0
             else:
                 diversity = max(
-                    cosine_sim(query_embedding, doc_embeddings[s[0]])
+                    cosine_sim(query_embedding, doc_emb_map[s[0]])
                     for s in selected
                 )
 
@@ -166,7 +162,7 @@ def build_context(rows):
     if not rows:
         return ""
 
-    return "\n\n".join([
+    return "\n".join([
         f"""
 DOCUMENT {i+1}
 SOURCE: {r[1]}
@@ -180,68 +176,90 @@ CONTENT:
 
 
 # -----------------------------
-# SQL TOOL
+# SQL TOOL (STRUCTURED OUTPUT ONLY)
 # -----------------------------
-def run_sql():
+def run_sql(query: str = None):
+
+    q = (query or "").lower()
+
+    # specific metric path
+    if "refund" in q and ("how many" in q or "count" in q):
+        cur.execute("""
+            SELECT COUNT(*)
+            FROM support_tickets
+            WHERE category ILIKE '%refund%'
+        """)
+        return {
+            "type": "metric",
+            "name": "refund_tickets",
+            "value": cur.fetchone()[0],
+            "unit": "tickets"
+        }
+
+    # fallback aggregation
     cur.execute("""
         SELECT category, COUNT(*)
         FROM support_tickets
         GROUP BY category
     """)
 
-    rows = cur.fetchall()
-    return "\n".join([f"{r[0]}: {r[1]}" for r in rows])
+    return {
+        "type": "category_distribution",
+        "data": {r[0]: r[1] for r in cur.fetchall()}
+    }
 
 
 # -----------------------------
-# PIPELINE
+# TOOL EXECUTION (SINGLE SOURCE OF TRUTH)
 # -----------------------------
-def execute_tools(query):
-    docs, query_embedding = retrieve_candidates(query)
+def execute_tools(query, route):
 
-    reranked = mmr_rerank(query, query_embedding, docs)
+    docs, q_emb = retrieve_candidates(query)
+    reranked = mmr_rerank(query, q_emb, docs)
 
-    context = []
-    context.append("[UNSTRUCTURED]")
-    context.append(build_context(reranked))
+    context = {
+        "unstructured": build_context(reranked),
+        "structured": None
+    }
 
-    if any(x in query.lower() for x in ["how many", "count", "trend", "volume"]):
-        context.append("\n[STRUCTURED]")
-        context.append(run_sql())
+    if route == "sql":
+        context["structured"] = run_sql(query)
 
-    return "\n".join(context)
+    elif route == "hybrid":
+        context["structured"] = run_sql(query)
+
+    return context
 
 
 # -----------------------------
-# GPT GENERATION
+# LLM
 # -----------------------------
 def generate_answer(query, context):
 
     prompt = f"""
 You are an Enterprise AI Analyst.
 
-Use ONLY the provided context.
-
-Main Issue:
-...
-
-Evidence:
-...
-
-Recommended Actions:
-...
+RULES:
+- Structured data is ground truth
+- Do NOT infer numbers
+- Use only provided context
 
 CONTEXT:
 {context}
 
 QUESTION:
 {query}
+
+FORMAT:
+Main Issue
+Evidence
+Recommendations
 """
 
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": "You are a precise enterprise analyst."},
+            {"role": "system", "content": "Precise enterprise analyst. No hallucination."},
             {"role": "user", "content": prompt}
         ]
     )
@@ -253,7 +271,14 @@ QUESTION:
 # MAIN
 # -----------------------------
 def ask(query: str):
-    context = execute_tools(query)
+
+    route = route_query(query)
+
+    print("\n--- INTENT ROUTE ---")
+    print(route)
+
+    context = execute_tools(query, route["route"])
+
     answer = generate_answer(query, context)
 
     print("\nAI ANSWER\n")
