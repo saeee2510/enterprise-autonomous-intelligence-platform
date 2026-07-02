@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 from pgvector.psycopg2 import register_vector
 from core.router import route_query
-
+from core.planner import route_query
 # -----------------------------
 # ENV + CLIENT
 # -----------------------------
@@ -272,12 +272,23 @@ Recommendations
 # -----------------------------
 def ask(query: str):
 
-    route = route_query(query)
+    plan = route_query(query)
 
-    print("\n--- INTENT ROUTE ---")
-    print(route)
+    print("\n--- PLAN ---")
+    print(plan)
 
-    context = execute_tools(query, route["route"])
+    context_parts = []
+
+    for step in plan["steps"]:
+
+        if step["tool"] == "sql":
+            context_parts.append(run_sql(query))
+
+        elif step["tool"] == "retrieval":
+            docs, _ = retrieve_candidates(query)
+            context_parts.append(build_context(docs))
+
+    context = "\n\n".join(context_parts)
 
     answer = generate_answer(query, context)
 
