@@ -7,6 +7,7 @@ from pgvector.psycopg2 import register_vector
 
 from core.planner import route_query
 from core.fusion_agent import fuse_results
+from core.verification_agent import verify
 
 # -----------------------------
 # ENV + CLIENT
@@ -185,8 +186,14 @@ def ask(query: str):
     print("\n--- FUSED EVIDENCE GRAPH ---\n")
     print(json.dumps(fused, indent=2))
 
+    #4. VERIFICATION
+
+    verified = verify(fused, sql_result, docs_text)
+    print("\n--- VERIFIED EVIDENCE GRAPH ---\n")
+    print(json.dumps(verified, indent=2))
+
     # 4. ANSWER GENERATION
-    answer = generate_answer(query, json.dumps(fused, indent=2))
+    answer = generate_answer(query, json.dumps(verified))
 
     print("\nAI ANSWER\n")
     print(answer)
