@@ -1,7 +1,6 @@
 import os
 import json
 import psycopg2
-import numpy as np
 from dotenv import load_dotenv
 from openai import OpenAI
 from pgvector.psycopg2 import register_vector
@@ -26,6 +25,7 @@ conn = psycopg2.connect(
 register_vector(conn)
 cur = conn.cursor()
 
+
 # -----------------------------
 # EMBEDDINGS
 # -----------------------------
@@ -38,20 +38,22 @@ def get_embedding(text: str):
 
 
 # -----------------------------
-# RETRIEVAL
+# RETRIEVAL LAYER
 # -----------------------------
 def retrieve_candidates(query, top_k=10):
     q_emb = get_embedding(query)
 
-    cur.execute("""
+    cur.execute(
+        """
         SELECT content, source, department, embedding
         FROM documents
         ORDER BY embedding <-> %s::vector
         LIMIT %s;
-    """, (q_emb, top_k * 3))
+        """,
+        (q_emb, top_k * 3)
+    )
 
-    rows = cur.fetchall()
-    return rows, q_emb
+    return cur.fetchall(), q_emb
 
 
 def build_context(rows):
@@ -72,11 +74,12 @@ CONTENT:
 
 
 # -----------------------------
-# SQL TOOL
+# SQL LAYER
 # -----------------------------
 def run_sql(query: str):
     q = query.lower()
 
+    # specific metric
     if "refund" in q and ("how many" in q or "count" in q):
         cur.execute("""
             SELECT COUNT(*)
@@ -90,6 +93,7 @@ def run_sql(query: str):
             "unit": "tickets"
         }
 
+    # fallback aggregation
     cur.execute("""
         SELECT category, COUNT(*)
         FROM support_tickets
@@ -103,14 +107,17 @@ def run_sql(query: str):
 
 
 # -----------------------------
-# LLM
+# LLM GENERATION
 # -----------------------------
 def generate_answer(query, fused_context):
 
     prompt = f"""
 You are an Enterprise AI Analyst.
 
-Use ONLY the provided evidence.
+RULES:
+- Use ONLY provided evidence
+- Do NOT hallucinate numbers
+- Structured data is ground truth
 
 CONTEXT:
 {fused_context}
@@ -136,36 +143,55 @@ Recommendations
 
 
 # -----------------------------
-# MAIN PIPELINE
+# PIPELINE (PHASE 9 CORE)
 # -----------------------------
 def ask(query: str):
 
+    # 1. PLAN
     plan = route_query(query)
 
     print("\n--- PLAN ---")
-    print(plan)
+    print(json.dumps(plan, indent=2))
 
     sql_result = None
     docs_text = ""
 
-    for step in plan["steps"]:
+    steps = plan.get("steps", [])
 
-        if step["tool"] == "sql":
+    # fallback if planner fails
+    if not steps:
+        steps = [{"tool": "hybrid"}]
+
+    # 2. EXECUTE PLAN
+    for step in steps:
+
+        tool = step.get("tool")
+
+        if tool == "sql":
             sql_result = run_sql(query)
 
-        elif step["tool"] == "retrieval":
+        elif tool == "retrieval":
             docs, q_emb = retrieve_candidates(query)
             docs_text = build_context(docs)
 
+        elif tool == "hybrid":
+            sql_result = run_sql(query)
+            docs, q_emb = retrieve_candidates(query)
+            docs_text = build_context(docs)
+
+    # 3. FUSION
     fused = fuse_results(query, sql_result, docs_text)
 
     print("\n--- FUSED EVIDENCE GRAPH ---\n")
     print(json.dumps(fused, indent=2))
 
+    # 4. ANSWER GENERATION
     answer = generate_answer(query, json.dumps(fused, indent=2))
 
     print("\nAI ANSWER\n")
     print(answer)
+
+    return answer
 
 
 # -----------------------------
