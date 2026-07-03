@@ -8,6 +8,7 @@ from pgvector.psycopg2 import register_vector
 from core.planner import route_query
 from core.fusion_agent import fuse_results
 from core.verification_agent import verify
+from core.report_generator import generate_report
 
 # -----------------------------
 # ENV + CLIENT
@@ -26,7 +27,6 @@ conn = psycopg2.connect(
 register_vector(conn)
 cur = conn.cursor()
 
-
 # -----------------------------
 # EMBEDDINGS
 # -----------------------------
@@ -39,20 +39,17 @@ def get_embedding(text: str):
 
 
 # -----------------------------
-# RETRIEVAL LAYER
+# RETRIEVAL
 # -----------------------------
 def retrieve_candidates(query, top_k=10):
     q_emb = get_embedding(query)
 
-    cur.execute(
-        """
+    cur.execute("""
         SELECT content, source, department, embedding
         FROM documents
         ORDER BY embedding <-> %s::vector
         LIMIT %s;
-        """,
-        (q_emb, top_k * 3)
-    )
+    """, (q_emb, top_k * 3))
 
     return cur.fetchall(), q_emb
 
@@ -80,7 +77,6 @@ CONTENT:
 def run_sql(query: str):
     q = query.lower()
 
-    # specific metric
     if "refund" in q and ("how many" in q or "count" in q):
         cur.execute("""
             SELECT COUNT(*)
@@ -94,7 +90,6 @@ def run_sql(query: str):
             "unit": "tickets"
         }
 
-    # fallback aggregation
     cur.execute("""
         SELECT category, COUNT(*)
         FROM support_tickets
@@ -108,20 +103,16 @@ def run_sql(query: str):
 
 
 # -----------------------------
-# LLM GENERATION
+# LLM ANSWER
 # -----------------------------
-def generate_answer(query, fused_context):
-
+def generate_answer(query, context):
     prompt = f"""
 You are an Enterprise AI Analyst.
 
-RULES:
-- Use ONLY provided evidence
-- Do NOT hallucinate numbers
-- Structured data is ground truth
+Use ONLY provided evidence.
 
 CONTEXT:
-{fused_context}
+{context}
 
 QUESTION:
 {query}
@@ -144,7 +135,7 @@ Recommendations
 
 
 # -----------------------------
-# PIPELINE (PHASE 9 CORE)
+# MAIN PIPELINE (PHASE 9)
 # -----------------------------
 def ask(query: str):
 
@@ -159,11 +150,10 @@ def ask(query: str):
 
     steps = plan.get("steps", [])
 
-    # fallback if planner fails
     if not steps:
         steps = [{"tool": "hybrid"}]
 
-    # 2. EXECUTE PLAN
+    # 2. EXECUTION
     for step in steps:
 
         tool = step.get("tool")
@@ -172,12 +162,12 @@ def ask(query: str):
             sql_result = run_sql(query)
 
         elif tool == "retrieval":
-            docs, q_emb = retrieve_candidates(query)
+            docs, _ = retrieve_candidates(query)
             docs_text = build_context(docs)
 
         elif tool == "hybrid":
             sql_result = run_sql(query)
-            docs, q_emb = retrieve_candidates(query)
+            docs, _ = retrieve_candidates(query)
             docs_text = build_context(docs)
 
     # 3. FUSION
@@ -186,20 +176,25 @@ def ask(query: str):
     print("\n--- FUSED EVIDENCE GRAPH ---\n")
     print(json.dumps(fused, indent=2))
 
-    #4. VERIFICATION
-
+    # 4. VERIFICATION
     verified = verify(fused, sql_result, docs_text)
+
     print("\n--- VERIFIED EVIDENCE GRAPH ---\n")
     print(json.dumps(verified, indent=2))
 
-    # 4. ANSWER GENERATION
-    answer = generate_answer(query, json.dumps(verified))
+    # 5. ANSWER
+    answer = generate_answer(query, json.dumps(verified, indent=2))
 
     print("\nAI ANSWER\n")
     print(answer)
 
-    return answer
+    # 6. REPORT (PHASE 9 OUTPUT)
+    report = generate_report(query, fused, verified)
 
+    print("\n--- FINAL REPORT ---\n")
+    print(report)
+
+    return answer
 
 # -----------------------------
 # CLI

@@ -1,50 +1,71 @@
 from typing import Dict, Any, List
 
 
+# -----------------------------
+# MAIN FUSION FUNCTION
+# -----------------------------
 def fuse_results(query: str, sql_result: Dict, docs: str):
-    """
-    Converts raw SQL + retrieval outputs into unified evidence graph
-    """
 
-    # -----------------------------
-    # PARSE STRUCTURED DATA
-    # -----------------------------
-    structured = sql_result if sql_result else {}
+    structured = sql_result or {}
 
-    # -----------------------------
-    # EXTRACT UNSTRUCTURED SIGNALS
-    # -----------------------------
     signals = extract_signals(docs)
-
-    # -----------------------------
-    # GENERATE INSIGHTS (RULE-BASED FIRST)
-    # -----------------------------
     insights = generate_insights(structured, signals)
 
-    # -----------------------------
-    # CONFIDENCE SCORING
-    # -----------------------------
-    confidence = compute_confidence(structured, signals)
+    source_map = {
+        "sql": bool(sql_result),
+        "docs": bool(docs)
+    }
+
+    verified_claims = build_claims(structured, signals)
+
+    confidence = compute_confidence(verified_claims, source_map)
 
     return {
         "query": query,
         "structured": structured,
         "unstructured_signals": signals,
         "insights": insights,
-        "confidence": confidence
+        "confidence": confidence,
+        "source_map": source_map
     }
+
+
+# -----------------------------
+# CLAIM BUILDER (IMPORTANT FIX)
+# -----------------------------
+def build_claims(structured: Dict, signals: List[str]):
+
+    claims = []
+
+    # SQL claim
+    if structured and "value" in structured:
+        claims.append({
+            "claim": f"{structured.get('name')} = {structured.get('value')}",
+            "verified": True,
+            "source": "sql"
+        })
+
+    # signal claims (docs-derived heuristics)
+    for s in signals:
+        claims.append({
+            "claim": s,
+            "verified": False,
+            "source": "docs"
+        })
+
+    return claims
 
 
 # -----------------------------
 # SIGNAL EXTRACTION
 # -----------------------------
 def extract_signals(docs: str) -> List[str]:
+
     if not docs:
         return []
 
-    signals = []
-
     text = docs.lower()
+    signals = []
 
     if "refund" in text:
         signals.append("refund-related complaints detected")
@@ -55,31 +76,32 @@ def extract_signals(docs: str) -> List[str]:
     if "delay" in text:
         signals.append("delay in processing detected")
 
-    if "engineering" in text:
-        signals.append("system improvement activity detected")
-
     if "escalated" in text:
         signals.append("support escalation detected")
+
+    if "engineering" in text:
+        signals.append("system improvement activity detected")
 
     return signals
 
 
 # -----------------------------
-# INSIGHT GENERATION
+# INSIGHTS GENERATION
 # -----------------------------
 def generate_insights(structured: Dict, signals: List[str]) -> List[str]:
+
     insights = []
 
-    refund_volume = structured.get("value")
+    value = structured.get("value", 0)
 
-    if refund_volume and refund_volume > 100:
+    if isinstance(value, (int, float)) and value > 100:
         insights.append("High refund volume indicates systemic issue")
-
-    if "delay in processing detected" in signals:
-        insights.append("Operational latency likely contributing factor")
 
     if "duplicate charge incidents detected" in signals:
         insights.append("Billing integrity issues present")
+
+    if "delay in processing detected" in signals:
+        insights.append("Operational latency likely contributing factor")
 
     if len(signals) >= 3:
         insights.append("Multi-system failure pattern detected")
@@ -88,14 +110,27 @@ def generate_insights(structured: Dict, signals: List[str]) -> List[str]:
 
 
 # -----------------------------
-# CONFIDENCE MODEL
+# CONFIDENCE (FIXED + STABLE)
 # -----------------------------
-def compute_confidence(structured: Dict, signals: List[str]) -> float:
-    score = 0.5
+def compute_confidence(verified_claims: List[Dict], source_map: Dict):
 
-    if structured:
-        score += 0.2
+    if not verified_claims:
+        return 0.0
 
-    score += min(len(signals) * 0.1, 0.3)
+    verified_count = 0
 
-    return round(min(score, 0.95), 2)
+    for c in verified_claims:
+        if isinstance(c, dict) and c.get("verified") is True:
+            verified_count += 1
+
+    base = verified_count / len(verified_claims)
+
+    # structured boost
+    if source_map.get("sql"):
+        base += 0.1
+
+    # docs uncertainty penalty
+    if source_map.get("docs"):
+        base -= 0.05
+
+    return round(max(0.0, min(base, 0.95)), 2)
