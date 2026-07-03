@@ -1,11 +1,13 @@
 import os
+import json
 import psycopg2
 import numpy as np
 from dotenv import load_dotenv
 from openai import OpenAI
 from pgvector.psycopg2 import register_vector
 
-from core.planner import route_query   
+from core.planner import route_query
+from core.fusion_agent import fuse_results
 
 # -----------------------------
 # ENV + CLIENT
@@ -24,139 +26,34 @@ conn = psycopg2.connect(
 register_vector(conn)
 cur = conn.cursor()
 
-DEBUG = False
-
-
 # -----------------------------
 # EMBEDDINGS
 # -----------------------------
 def get_embedding(text: str):
-    response = client.embeddings.create(
+    res = client.embeddings.create(
         model="text-embedding-3-small",
         input=text
     )
-    return response.data[0].embedding
-
-
-# -----------------------------
-# DEDUP
-# -----------------------------
-def deduplicate_docs(rows):
-    seen = set()
-    unique = []
-
-    for r in rows:
-        key = r[0][:150].strip().lower()
-        if key not in seen:
-            seen.add(key)
-            unique.append(r)
-
-    return unique
-
-
-# -----------------------------
-# HYBRID SCORE
-# -----------------------------
-def hybrid_score(text, query):
-    text_l = text.lower()
-    query_l = query.lower()
-
-    score = 0.0
-
-    if query_l in text_l:
-        score += 10
-
-    weights = {
-        "refund": 3,
-        "duplicate": 5,
-        "charge": 3,
-        "escalated": 4,
-        "delay": 3,
-        "not received": 5,
-        "billing": 2
-    }
-
-    for term, w in weights.items():
-        if term in text_l:
-            score += w
-
-    score += len(set(query_l.split()) & set(text_l.split())) * 1.5
-
-    return score
+    return res.data[0].embedding
 
 
 # -----------------------------
 # RETRIEVAL
 # -----------------------------
 def retrieve_candidates(query, top_k=10):
-    embedding = get_embedding(query)
+    q_emb = get_embedding(query)
 
-    cur.execute(
-        """
+    cur.execute("""
         SELECT content, source, department, embedding
         FROM documents
         ORDER BY embedding <-> %s::vector
         LIMIT %s;
-        """,
-        (embedding, top_k * 3)
-    )
+    """, (q_emb, top_k * 3))
 
     rows = cur.fetchall()
-    rows = deduplicate_docs(rows)
-
-    return rows, embedding
+    return rows, q_emb
 
 
-# -----------------------------
-# COSINE SIM
-# -----------------------------
-def cosine_sim(a, b):
-    a = np.array(a)
-    b = np.array(b)
-    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
-
-
-# -----------------------------
-# MMR RERANK
-# -----------------------------
-def mmr_rerank(query, query_embedding, docs, lambda_=0.7, k=5):
-    selected = []
-    candidates = docs.copy()
-
-    doc_emb_map = {d[0]: d[3] for d in docs}
-
-    for _ in range(min(k, len(candidates))):
-        best_doc = None
-        best_score = -1
-
-        for doc in candidates:
-            if doc in selected:
-                continue
-
-            relevance = hybrid_score(doc[0], query)
-
-            if not selected:
-                diversity = 0
-            else:
-                diversity = max(
-                    cosine_sim(doc[3], d[3]) for d in selected
-                )
-
-            score = lambda_ * relevance - (1 - lambda_) * diversity
-
-            if score > best_score:
-                best_score = score
-                best_doc = doc
-
-        if best_doc:
-            selected.append(best_doc)
-
-    return selected
-
-
-# -----------------------------
-# CONTEXT BUILDER
-# -----------------------------
 def build_context(rows):
     if not rows:
         return ""
@@ -177,8 +74,8 @@ CONTENT:
 # -----------------------------
 # SQL TOOL
 # -----------------------------
-def run_sql(query: str = None):
-    q = (query or "").lower()
+def run_sql(query: str):
+    q = query.lower()
 
     if "refund" in q and ("how many" in q or "count" in q):
         cur.execute("""
@@ -206,44 +103,17 @@ def run_sql(query: str = None):
 
 
 # -----------------------------
-# PIPELINE
+# LLM
 # -----------------------------
-def ask(query: str):
+def generate_answer(query, fused_context):
 
-    plan = route_query(query)
-
-    print("\n--- PLAN ---")
-    print(plan)
-
-    context_parts = []
-
-    for step in plan["steps"]:
-
-        if step["tool"] == "sql":
-            context_parts.append(run_sql(query))
-
-        elif step["tool"] == "retrieval":
-            docs, _ = retrieve_candidates(query)
-            reranked = mmr_rerank(query, _, docs)
-            context_parts.append(build_context(reranked))
-
-    context = "\n\n".join(
-        [str(c) for c in context_parts]
-    )
-
-    # -----------------------------
-    # LLM
-    # -----------------------------
     prompt = f"""
 You are an Enterprise AI Analyst.
 
-RULES:
-- Use ONLY provided context
-- Structured data is ground truth
-- Do NOT hallucinate numbers
+Use ONLY the provided evidence.
 
 CONTEXT:
-{context}
+{fused_context}
 
 QUESTION:
 {query}
@@ -254,7 +124,7 @@ Evidence
 Recommendations
 """
 
-    response = client.chat.completions.create(
+    res = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
             {"role": "system", "content": "Precise enterprise analyst."},
@@ -262,13 +132,45 @@ Recommendations
         ]
     )
 
+    return res.choices[0].message.content
+
+
+# -----------------------------
+# MAIN PIPELINE
+# -----------------------------
+def ask(query: str):
+
+    plan = route_query(query)
+
+    print("\n--- PLAN ---")
+    print(plan)
+
+    sql_result = None
+    docs_text = ""
+
+    for step in plan["steps"]:
+
+        if step["tool"] == "sql":
+            sql_result = run_sql(query)
+
+        elif step["tool"] == "retrieval":
+            docs, q_emb = retrieve_candidates(query)
+            docs_text = build_context(docs)
+
+    fused = fuse_results(query, sql_result, docs_text)
+
+    print("\n--- FUSED EVIDENCE GRAPH ---\n")
+    print(json.dumps(fused, indent=2))
+
+    answer = generate_answer(query, json.dumps(fused, indent=2))
+
     print("\nAI ANSWER\n")
-    print(response.choices[0].message.content)
+    print(answer)
 
 
 # -----------------------------
 # CLI
 # -----------------------------
 if __name__ == "__main__":
-    query = input("Ask EAIP: ")
-    ask(query)
+    q = input("Ask EAIP: ")
+    ask(q)
