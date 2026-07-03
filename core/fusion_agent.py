@@ -1,4 +1,5 @@
-from typing import Dict, Any, List
+from typing import Dict, List
+from core.claim_builder import build_claim_graph
 
 
 # -----------------------------
@@ -8,52 +9,39 @@ def fuse_results(query: str, sql_result: Dict, docs: str):
 
     structured = sql_result or {}
 
+    # Extract signals from retrieved documents
     signals = extract_signals(docs)
+
+    # Generate higher-level insights
     insights = generate_insights(structured, signals)
 
+    # Track available evidence sources
     source_map = {
         "sql": bool(sql_result),
         "docs": bool(docs)
     }
 
-    verified_claims = build_claims(structured, signals)
+    # Build claim graph
+    claims = build_claim_graph(
+        fused={
+            "insights": insights
+        },
+        sql_result=structured,
+        signals=signals
+    )
 
-    confidence = compute_confidence(verified_claims, source_map)
+    # Overall evidence confidence
+    confidence = compute_claim_confidence(claims)
 
     return {
         "query": query,
         "structured": structured,
         "unstructured_signals": signals,
         "insights": insights,
+        "claims": claims,
         "confidence": confidence,
         "source_map": source_map
     }
-
-
-# -----------------------------
-# CLAIM BUILDER (IMPORTANT FIX)
-# -----------------------------
-def build_claims(structured: Dict, signals: List[str]):
-
-    claims = []
-
-    # SQL claim
-    if structured and "value" in structured:
-        claims.append({
-            "claim": f"{structured.get('name')} = {structured.get('value')}",
-            "verified": True,
-            "source": "sql"
-        })
-
-    # signal claims (docs-derived heuristics)
-    for s in signals:
-        claims.append({
-            "claim": s,
-            "verified": False,
-            "source": "docs"
-        })
-
-    return claims
 
 
 # -----------------------------
@@ -86,7 +74,7 @@ def extract_signals(docs: str) -> List[str]:
 
 
 # -----------------------------
-# INSIGHTS GENERATION
+# INSIGHT GENERATION
 # -----------------------------
 def generate_insights(structured: Dict, signals: List[str]) -> List[str]:
 
@@ -110,27 +98,22 @@ def generate_insights(structured: Dict, signals: List[str]) -> List[str]:
 
 
 # -----------------------------
-# CONFIDENCE (FIXED + STABLE)
+# CONFIDENCE
 # -----------------------------
-def compute_confidence(verified_claims: List[Dict], source_map: Dict):
+def compute_claim_confidence(claims):
 
-    if not verified_claims:
+    if not claims:
         return 0.0
 
-    verified_count = 0
+    total = len(claims)
+    score = sum(1 for c in claims if c.get("verified"))
 
-    for c in verified_claims:
-        if isinstance(c, dict) and c.get("verified") is True:
-            verified_count += 1
+    base = score / total
 
-    base = verified_count / len(verified_claims)
+    # boost factual claims
+    fact_bonus = 0.1 * sum(
+        1 for c in claims
+        if c.get("type") == "fact"
+    )
 
-    # structured boost
-    if source_map.get("sql"):
-        base += 0.1
-
-    # docs uncertainty penalty
-    if source_map.get("docs"):
-        base -= 0.05
-
-    return round(max(0.0, min(base, 0.95)), 2)
+    return round(min(base + fact_bonus, 0.95), 2)

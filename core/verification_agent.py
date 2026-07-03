@@ -152,3 +152,22 @@ def verify(fused_output, sql_result, docs_text):
         "confidence": confidence,
         "raw_fused": fused_output
     }
+
+def verify_claims(claims, docs_text):
+
+    verified = []
+
+    for c in claims:
+
+        if c["source"] == "sql":
+            c["verified"] = True
+
+        elif c["source"] == "docs":
+            c["verified"] = c["statement"].lower() in (docs_text or "").lower()
+
+        else:
+            c["verified"] = True  # inference stage (later you refine this)
+
+        verified.append(c)
+
+    return verified
