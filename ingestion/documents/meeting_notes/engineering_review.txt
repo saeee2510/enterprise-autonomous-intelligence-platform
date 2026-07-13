@@ -1,0 +1,23 @@
+Engineering Incident Review
+
+
+Incident:
+
+Checkout failures after release v3.2.
+
+
+Root Cause:
+
+Incorrect retry handling caused duplicate payment attempts.
+
+
+Impact:
+
+European customers were affected.
+
+Support volume increased by 35%.
+
+
+Resolution:
+
+Rollback retry changes and deploy hotfix.

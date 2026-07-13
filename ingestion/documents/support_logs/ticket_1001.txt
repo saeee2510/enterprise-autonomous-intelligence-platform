@@ -1,0 +1,30 @@
+Support Ticket ID:
+1001
+
+
+Customer:
+EuroRetail GmbH
+
+
+Region:
+Europe
+
+
+Severity:
+Critical
+
+
+Problem:
+
+Customer was charged twice during checkout.
+
+
+Details:
+
+Duplicate transactions started after release v3.2.
+
+The issue appears related to payment retry behavior.
+
+
+Status:
+Escalated to Engineering.

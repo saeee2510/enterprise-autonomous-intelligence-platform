@@ -1,0 +1,24 @@
+Product Release Notes v3.2
+
+Release Date:
+April 15 2025
+
+
+Feature Changes:
+
+- Updated checkout payment workflow.
+- Added automatic payment retry mechanism.
+
+
+Known Issues:
+
+After deployment, several European customers reported duplicate payment attempts.
+
+Engineering identified a problem in retry handling logic.
+
+Affected Service:
+Checkout Service
+
+
+Status:
+Investigation ongoing.

@@ -1,0 +1,22 @@
+Customer Feedback Summary
+
+
+Customers reported checkout problems after release v3.2.
+
+
+Common complaints:
+
+- Duplicate payments
+- Failed checkout attempts
+- Increased refund requests
+
+
+Most affected region:
+
+Europe
+
+
+Business Impact:
+
+Refund volume increased.
+Customer satisfaction decreased.
