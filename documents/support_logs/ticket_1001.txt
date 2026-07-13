@@ -1,0 +1,14 @@
+Customer:
+EuroRetail GmbH
+
+Issue:
+Duplicate payment charged twice.
+
+Region:
+Europe
+
+Severity:
+Critical
+
+Date:
+April 20 2025

@@ -1,0 +1,9 @@
+Customer feedback:
+
+Multiple customers reported checkout failures after release 3.2.
+
+Most affected region:
+Europe
+
+Impact:
+Refund requests increased.

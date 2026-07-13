@@ -27,6 +27,7 @@ conn = psycopg2.connect(
 register_vector(conn)
 cur = conn.cursor()
 
+
 # -----------------------------
 # EMBEDDINGS
 # -----------------------------
@@ -135,11 +136,13 @@ Recommendations
 
 
 # -----------------------------
-# MAIN PIPELINE (PHASE 9)
+# MAIN PIPELINE
 # -----------------------------
 def ask(query: str):
 
+    # -----------------------------
     # 1. PLAN
+    # -----------------------------
     plan = route_query(query)
 
     print("\n--- PLAN ---")
@@ -149,11 +152,12 @@ def ask(query: str):
     docs_text = ""
 
     steps = plan.get("steps", [])
-
     if not steps:
         steps = [{"tool": "hybrid"}]
 
+    # -----------------------------
     # 2. EXECUTION
+    # -----------------------------
     for step in steps:
 
         tool = step.get("tool")
@@ -170,31 +174,53 @@ def ask(query: str):
             docs, _ = retrieve_candidates(query)
             docs_text = build_context(docs)
 
+    # -----------------------------
     # 3. FUSION
+    # -----------------------------
     fused = fuse_results(query, sql_result, docs_text)
 
-    print("\n--- FUSED EVIDENCE GRAPH ---\n")
+    print("\n--- FUSED EVIDENCE GRAPH ---")
     print(json.dumps(fused, indent=2))
 
+    # -----------------------------
     # 4. VERIFICATION
+    # -----------------------------
     verified = verify(fused, sql_result, docs_text)
 
-    print("\n--- VERIFIED EVIDENCE GRAPH ---\n")
+    print("\n--- VERIFIED EVIDENCE GRAPH ---")
     print(json.dumps(verified, indent=2))
 
+    # -----------------------------
     # 5. ANSWER
-    answer = generate_answer(query, json.dumps(verified, indent=2))
+    # -----------------------------
+    answer = generate_answer(
+        query,
+        json.dumps(verified, indent=2)
+    )
 
-    print("\nAI ANSWER\n")
+    print("\n--- AI ANSWER ---")
     print(answer)
 
-    # 6. REPORT (PHASE 9 OUTPUT)
+    # -----------------------------
+    # 6. REPORT
+    # -----------------------------
     report = generate_report(query, fused, verified)
 
-    print("\n--- FINAL REPORT ---\n")
-    print(report)
+    print("\n--- FINAL REPORT ---")
+    print(json.dumps(report, indent=2))
 
-    return answer
+    # -----------------------------
+    # 7. RETURN EVERYTHING
+    # -----------------------------
+    return {
+        "answer": answer,
+        "report": report,
+        "verified": verified,
+        "fused": fused,
+        "sql": sql_result,
+        "docs": docs_text,
+        "trace": plan
+    }
 
 # -----------------------------
 # CLI

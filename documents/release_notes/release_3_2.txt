@@ -1,0 +1,12 @@
+Release Notes v3.2
+
+Date:
+April 15 2025
+
+Changes:
+- Updated checkout workflow
+- Added payment retry mechanism
+
+Known Issues:
+Several European customers reported duplicate payment attempts.
+Engineering is investigating.

@@ -1,52 +1,49 @@
-from openai import OpenAI
-import os
-import json
-from dotenv import load_dotenv
-
-load_dotenv()
-
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+from typing import Dict
 
 
-def generate_report(query, fused_graph, verified_graph):
+def generate_report(query: str, fused: Dict, verified: Dict):
 
-    prompt = f"""
-You are an enterprise analytics system.
+    structured = fused.get("structured", {})
+    insights = fused.get("insights", [])
+    verified_claims = verified.get("verified_claims", [])
 
-You are given structured evidence.
+    executive_summary = ""
 
-Do NOT hallucinate.
+    if structured.get("type") == "metric":
+        executive_summary = (
+            f"The system found {structured.get('value')} "
+            f"{structured.get('unit')} for {structured.get('name')}."
+        )
 
-Only use provided data.
+    key_metrics = []
 
-QUESTION:
-{query}
+    if structured.get("type") == "metric":
+        key_metrics.append({
+            "metric": structured.get("name"),
+            "value": structured.get("value"),
+            "unit": structured.get("unit")
+        })
 
-FUSED EVIDENCE:
-{json.dumps(fused_graph, indent=2)}
+    recommendations = []
 
-VERIFIED EVIDENCE:
-{json.dumps(verified_graph, indent=2)}
+    if structured.get("value", 0) > 100:
+        recommendations.append(
+            "Investigate the root cause of the elevated refund volume."
+        )
 
-Return STRICT JSON:
+    if not recommendations:
+        recommendations.append(
+            "No immediate action recommended."
+        )
 
-{{
-  "executive_summary": "",
-  "root_cause": "",
-  "key_metrics": [],
-  "timeline": [],
-  "risk_level": "low|medium|high",
-  "recommendations": [],
-  "confidence": 0.0
-}}
-"""
-
-    res = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": "You are a strict enterprise reporting engine."},
-            {"role": "user", "content": prompt}
-        ]
-    )
-
-    return res.choices[0].message.content
+    return {
+        "question": query,
+        "executive_summary": executive_summary,
+        "verified_evidence": verified_claims,
+        "insights": insights,
+        "key_metrics": key_metrics,
+        "timeline": [],
+        "risk_level": "medium",
+        "recommendations": recommendations,
+        "confidence": verified.get("confidence", 0)
+    }
