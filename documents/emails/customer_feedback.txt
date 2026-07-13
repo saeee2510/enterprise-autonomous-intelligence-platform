@@ -1,0 +1,21 @@
+Customer Feedback Summary
+
+
+Multiple enterprise customers reported checkout failures after release v3.2.
+
+
+Common complaints:
+
+- Duplicate payments
+- Failed checkout attempts
+- Increased refund requests
+
+
+Most impacted region:
+
+Europe
+
+
+Business Impact:
+
+Customer satisfaction decreased and refund volume increased.
