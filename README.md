@@ -1,194 +1,214 @@
-# Enterprise Autonomous Intelligence Platform
 
-A multi-agent system that answers business questions ("Why did revenue drop in Europe?") using both structured data (PostgreSQL) and unstructured documents (release notes, incident reviews, support tickets, emails), and backs every claim in its answer with a cited, verified source.
 
-It is built as a deterministic LangGraph pipeline rather than an open-ended agent loop: each agent is a function with a fixed input/output contract, every claim is checked against the exact evidence it cites, and every run is logged and measured.
+  # Enterprise Autonomous Intelligence Platform
 
-## Results
+An enterprise-grade, multi-agent AI platform that answers business questions using **structured** (SQL) and **unstructured** (documents, tickets, emails) enterprise data — with full **traceability** from every claim back to its source.
 
-Measured on a 30-question benchmark (`evaluation/benchmark.jsonl`) covering SQL, document, root-cause, false-premise, edge, and safety questions:
+This is not a chatbot wrapper. It's a deterministic, multi-stage pipeline: a question comes in, an intent router and planner decide what data is needed, dedicated agents pull SQL results and retrieved documents, a fusion step combines them into an evidence graph, a verification step rejects unsupported claims, and a report generator produces the final, cited answer.
 
-| Metric | Result |
-| --- | --- |
-| Answer accuracy | **93.3%** |
-| SQL execution accuracy | **100%** |
-| False-premise rejection | **100%** |
-| Routing accuracy | **100%** |
-| Distractor resistance | **100%** |
-| Root-cause accuracy | 87.5% |
-| Retrieval recall@k / MRR | 90.2% / 1.0 |
-| Unsupported claims in final answers | **2.6%** |
-| Summaries with ungrounded numbers | **0%** |
-| Safety (write requests left data unchanged) | **100%** |
-| Latency p50 / p95 | 5.5s / 15.8s |
-| Cost per question | ~$0.0016 |
+## System Design Goals
 
-Improvements driven by the evaluation (baseline → final):
+**Functional**
+- Accept a natural-language business question
+- Decide which data sources are needed (SQL, documents, or both)
+- Run SQL queries safely (read-only)
+- Retrieve relevant documents via hybrid search
+- Fuse structured + unstructured evidence
+- Generate a final report with an evidence trail
 
-| | Baseline | Final |
-| --- | --- | --- |
-| Answer accuracy | 83.3% | 93.3% |
-| Unsupported-claim rate | 23.4% | 2.6% |
-| Summaries with ungrounded numbers | 30% | 0% |
-| SQL self-correction retries | 22 | 0 |
-| Latency p95 | 23.4s | 15.8s |
-
-Bugs the evaluation found that single-question testing never showed:
-
-- **Timestamp boundary bug:** `created_at <= '2025-05-31'` silently dropped every row after midnight on the last day (887 tickets reported instead of 897). Fixed with half-open date ranges.
-- **LLM arithmetic:** the fusion step summed weekly rows itself and produced invented totals. Fixed by allowing only verifiable arithmetic (see Verification).
-- **SQL retry storm:** every first-attempt query using `ROUND(double precision, 2)` failed in Postgres. Fixing one prompt rule removed all 27 retries and about one LLM call per question.
-- **Over-hedging:** after tightening verification, the system refused to state causes the documents stated explicitly. Fixed by separating "be skeptical of the question" from "trust stated evidence."
-
-### Verifier stress test
-
-Known errors are injected into real, finished answers and re-verified:
-
-| Check | Result |
-| --- | --- |
-| Wrong numbers caught | 77.3% |
-| Flipped trend words caught | 14.3% |
-| Judge false alarms on correct answers | 4.8% |
-
-Known limitation: a wrong number with no date beside it can coincidentally match another value in a large table, and a flipped trend word with no "from X to Y" numbers relies on the LLM judge, which is tuned for a low false-alarm rate rather than high recall.
+**Non-functional**
+- Deterministic execution pipeline — agents are functions, not open-ended "LLM loops"
+- Full observability: every step is logged (prompts, responses, latency, tokens, decisions)
+- Low-hallucination design via a dedicated verification layer
+- Reproducibility: same input → same execution trace
+- Stateless backend — all state lives in Postgres
 
 ## Architecture
 
 ```
-                       ┌──── sql_agent ──────┐
-    START → planner ───┤                     ├──→ fusion → verification ──→ report_generator → END
-            │          └── retrieval_agent ──┘       ▲            │
-            │                                        └─ revision ─┘  (at most once)
-            └──→ refusal → END   (write requests)
+                ┌────────────────────┐
+                │      Frontend      │
+                │   Streamlit UI     │
+                └─────────┬──────────┘
+                          │
+                          ▼
+                ┌────────────────────┐
+                │   FastAPI Backend  │
+                └─────────┬──────────┘
+                          │
+                          ▼
+                ┌────────────────────┐
+                │   Intent Router    │
+                └─────────┬──────────┘
+                          │
+        ┌─────────────────┼─────────────────┐
+        ▼                 ▼                 ▼
+┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+│  SQL Agent    │  │  Retrieval   │  │   Planner    │
+│  (Postgres)   │  │    Agent     │  │  (LangGraph) │
+└──────┬────────┘  └──────┬───────┘  └──────┬───────┘
+       ▼                  ▼                 ▼
+   PostgreSQL         pgvector DB     Execution Plan
+       └───────────────┬───────────────────┘
+                       ▼
+             ┌────────────────────┐
+             │   Fusion Agent     │
+             └─────────┬──────────┘
+                       ▼
+             ┌────────────────────┐
+             │ Verification Agent │
+             └─────────┬──────────┘
+                       ▼
+             ┌────────────────────┐
+             │  Report Generator  │
+             └─────────┬──────────┘
+                       ▼
+               Final Answer + Evidence
 ```
 
-| Node | What it does |
-| --- | --- |
-| `planner` | Turns the question into an explicit, validated plan of SQL and retrieval steps. Write requests ("delete…", "update…") are refused deterministically before any LLM or database call. |
-| `sql_agent` | Generates SQL from an auto-profiled schema (columns, foreign keys, allowed values, date ranges). Independent SQL steps run concurrently. |
-| `retrieval_agent` | Hybrid search: pgvector cosine + Postgres full-text candidates, scored with BM25 and cosine, fused with Reciprocal Rank Fusion, diversified with MMR. |
-| `fusion` | An LLM writes the answer as atomic claims, each citing evidence IDs (`sql:1`, `doc:2`). |
-| `verification` | Checks every claim and the summary against the cited evidence (below). |
-| `revision` | If verification rejects a claim or finds a contradiction, the draft goes back to fusion once with the verifier's objections. |
-| `report_generator` | Builds the final report from verified claims only; rejected claims are listed separately, never hidden. |
+**Key design decisions**
+- **Stateless backend** — all state (investigations, execution logs, embeddings) is stored in PostgreSQL.
+- **Agents as functions** — each agent (SQL, Retrieval, Planner, Fusion, Verification) is a deterministic module with a defined input/output contract, not a freeform reasoning loop.
+- **Evidence-first** — no output is produced without backing SQL results or retrieved document chunks.
 
-SQL and retrieval run in parallel, and the only cycle in the graph is bounded to one revision, so every run terminates.
+## Database Design
 
-## Verification
+| Table | Purpose |
+|---|---|
+| `business_data` (customers, orders, products, revenue, support_tickets) | SQL analytics layer used by the SQL Agent |
+| `documents` | Unstructured content chunks with `VECTOR(1536)` embeddings (pgvector), plus `source`, `department`, `timestamp` metadata |
+| `execution_logs` | Per-step trace: query id, step, input, output, latency, tokens, success — powers observability |
+| `investigations` | Stores each question, its generated plan, and the final report |
 
-Deterministic checks (no LLM):
-
-- **Citations:** every claim must cite evidence that exists.
-- **Numbers:** every number must appear in the cited evidence, allowing for rounding. The only arithmetic allowed is a difference or percentage change between two grounded numbers stated in the same sentence, so "fell from 67,292 to 45,015, a 33.1% drop" is checkable. Derivations from arbitrary evidence values are not allowed, because with hundreds of values some pair would match almost any number by coincidence.
-- **Dates:** dates are parsed as dates (`2025-04-21`, `April 21, 2025`, `March 10 and March 14 2025`) and must appear in the cited evidence. When a claim names a date, its numbers are checked against that date's rows only.
-- **Direction:** "rose from X to Y" is rejected when Y < X.
-- **Timeline:** events are kept only if their date is in the cited evidence.
-
-LLM judge (only for what the deterministic checks can't settle):
-
-- **Entailment:** is a document-based claim actually stated by the document it cites?
-- **Consistency:** does the summary contradict the SQL numbers? Issues must be typed, rated by severity, and quote the contradicting values; only high-severity direction or magnitude errors block the answer.
-
-## SQL safety
-
-Layered so no single check has to be perfect:
-
-1. Validation allows only a single `SELECT`/`WITH` statement and blocks write and DDL keywords and internal tables.
-2. Connections are opened in Postgres `READ ONLY` mode, so the database itself rejects writes.
-3. A 5-second statement timeout and a 200-row cap stop runaway queries.
-4. Failed queries get one self-correction attempt with the database error.
-
-## Observability
-
-Every node logs latency, LLM calls, tokens, and cost to `execution_logs`, and every investigation is saved to `investigations`. Logging failures never break an investigation.
+## Project Layout
 
 ```
-GET /logs/{trace_id}            per-step trace
-GET /investigation/{trace_id}   saved question, plan, and report
+backend/    → FastAPI application (routing, endpoints)
+core/       → agent logic: Intent Router, Planner (LangGraph), SQL Agent,
+              Retrieval Agent, Fusion Agent, Verification Agent, Report Generator
+database/   → Postgres/pgvector schema and data access layer
+ingestion/  → document chunking + embedding pipeline (e.g. ingestion/rag.py)
+frontend/   → Streamlit UI (query box, live execution steps, SQL/doc viewers, report)
+docker/     → containerization assets (Postgres + pgvector, backend, frontend)
+docs/       → architecture docs, API spec, evaluation reports
+tests/      → automated tests
 ```
 
-## Data
+## How a Query Flows Through the System
 
-`ingestion/synthetic_data.py` generates a seeded, deterministic dataset (March–May 2025) with a known causal story, so answers can be checked against ground truth:
+1. **Intent Router** classifies the question — e.g. `"How many users"` → SQL only, `"Why did revenue drop"` → hybrid, `"Explain this issue"` → retrieval only.
+2. **Planner** (LangGraph) turns the routed intent into a structured, explicit step list (no free-form text) — e.g. *query sales table → retrieve release notes → fetch support tickets*.
+3. **SQL Agent** generates, validates, and executes read-only SQL against `business_data` (writes/deletes/updates are blocked).
+4. **Retrieval Agent** runs hybrid search (BM25 keyword + pgvector similarity) over `documents` and returns the top-scoring chunks.
+5. **Fusion Agent** combines SQL results and retrieved chunks into a unified evidence graph (e.g. *"Revenue down 12% — supported by: revenue table, 120 support tickets, a release note bug, customer emails"*).
+6. **Verification Agent** checks that every claim in the draft answer maps back to a SQL result or document chunk, rejecting anything unsupported.
+7. **Report Generator** produces the final structured report: executive summary, root causes, evidence, timeline, metrics, recommendations, and an evidence-based confidence score.
 
-- Release v3.2 (April 15) adds a buggy payment-retry mechanism → EU duplicate charges and failed checkouts → EU billing tickets spike → duplicate-charge refunds → EU net revenue drops → hotfix v3.2.1 (May 2) → recovery.
-- Distractors the system must not blame: an APAC dashboard slowdown in March (no revenue impact) and a North America spring campaign in April (revenue up).
+## Build Status
 
-## Tech stack
+This project is being built in phases. **Phases 0–14 are complete**:
 
-Python · LangGraph · FastAPI · Streamlit · PostgreSQL · pgvector · OpenAI (GPT-4o-mini for the pipeline, GPT-4o for grading, text-embedding-3-small) · Docker (Postgres)
+- [x] Phase 0–1: System design and architecture
+- [x] Phase 2: Repo structure and commit strategy
+- [x] Phase 3: Data layer — synthetic enterprise dataset with causal structure (e.g. a product bug → support ticket spike → negative emails → refunds → revenue drop)
+- [x] Phase 4: Document ingestion pipeline (chunking → embeddings → pgvector)
+- [x] Phase 5: Intent Router
+- [x] Phase 6: Planner Agent (LangGraph)
+- [x] Phase 7: SQL Agent (with read-only safety guardrails)
+- [x] Phase 8: Retrieval Agent (hybrid BM25 + pgvector search)
+- [x] Phase 9: Fusion Agent
+- [x] Phase 10: Verification Agent
+- [x] Phase 11: Report Generator
+- [x] Phase 12: FastAPI backend (`/query`, `/investigation/{id}`, `/logs/{id}`, `/upload`, `/health`)
+- [x] Phase 13: Streamlit UI
+- [x] Phase 14: Observability layer (full step-by-step execution logging)
+
+**Remaining / roadmap:**
+
+- [ ] Phase 15: Evaluation framework (SQL correctness, retrieval precision, hallucination rate, consistency, latency, cost-per-query)
+- [ ] Phase 16: Docker Compose for one-command startup (backend + Postgres/pgvector + frontend)
+- [ ] Phase 17: Polish — architecture diagram, demo GIF, system design doc, API spec, evaluation report
+
+## Tech Stack
+
+- **Agent orchestration:** LangGraph
+- **Backend API:** FastAPI
+- **Frontend:** Streamlit
+- **Database:** PostgreSQL with the `pgvector` extension
+- **Embeddings:** OpenAI embeddings
+- **Retrieval:** Hybrid search (BM25 + vector similarity)
+- **Containerization:** Docker
+
+## Prerequisites
+
+- Python 3.10+
+- PostgreSQL with the `pgvector` extension enabled
+- An OpenAI API key (for embeddings and LLM reasoning)
+- Docker (optional, for containerized setup — see Phase 16 in the roadmap)
 
 ## Setup
 
-Requirements: Python 3.10+, Docker, and an OpenAI API key.
+1. **Clone the repository**
+   ```bash
+   git clone https://github.com/saeee2510/enterprise-autonomous-intelligence-platform.git
+   cd enterprise-autonomous-intelligence-platform
+   ```
 
+2. **Create a virtual environment and install dependencies**
+   ```bash
+   python -m venv venv
+   source venv/bin/activate   # On Windows: venv\Scripts\activate
+   pip install -r requirements.txt
+   ```
+
+3. **Configure environment variables**
+   ```bash
+   cp .env.example .env
+   ```
+   Fill in at minimum:
+   ```env
+   DATABASE_URL=postgresql://user:password@localhost:5432/enterprise_ai
+   OPENAI_API_KEY=your_openai_api_key
+   ```
+
+4. **Set up the database**
+
+   Create the database, enable `pgvector`, and apply the schema for `business_data`, `documents`, `execution_logs`, and `investigations` from `database/`.
+
+## Running the Project
+
+**Backend**
 ```bash
-git clone https://github.com/saeee2510/enterprise-autonomous-intelligence-platform.git
-cd enterprise-autonomous-intelligence-platform
-python -m venv venv
-source venv/bin/activate          # Windows: venv\Scripts\activate
-pip install -r requirements.txt
-cp .env.example .env              # add your OPENAI_API_KEY
-
-docker compose -f docker/docker-compose.yml up -d    # Postgres + pgvector on port 5450
-python -m ingestion.seed_pipeline                     # business data + ground truth
-python -m ingestion.ingest_document                   # embed documents
+cd backend
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-Run all commands from the project root.
-
-## Usage
-
+**Frontend**
 ```bash
-uvicorn backend.main:app --reload     # API on http://127.0.0.1:8000
-streamlit run frontend/app.py         # UI on http://localhost:8501 (second terminal)
+cd frontend
+streamlit run app.py
 ```
 
-The UI shows the report, each claim's verification status, the SQL and document evidence, the execution plan, and per-step latency, tokens, and cost.
-
-## Evaluation
-
+**Verify the embedding pipeline**
 ```bash
-python -m evaluation.run_eval                 # full benchmark (~5 minutes, ~$0.05)
-python -m evaluation.run_eval --limit 5       # quick check
-python -m evaluation.run_eval --ids why_01 fp_01
-python -m evaluation.run_eval --no-stress     # skip the verifier stress test
+python test_embedding.py
 ```
+This calls `ingestion.rag.get_embedding(...)` and prints the resulting embedding's dimensionality — a quick sanity check that the ingestion/embedding setup is working.
 
-Results are written to `evaluation/report.md` and `evaluation/results/`.
+## API Endpoints
 
-Grading: questions with an exact answer are graded deterministically (the gold SQL value must appear in both the system's SQL result and its summary). Open-ended questions are graded by GPT-4o against a reference answer, a different and stronger model than the one being graded, to reduce self-preference bias.
+| Method | Endpoint | Description |
+|---|---|---|
+| POST | `/query` | Submit a natural-language business question |
+| GET | `/investigation/{id}` | Retrieve a past investigation's plan and report |
+| GET | `/logs/{id}` | Retrieve the full execution trace for a query |
+| POST | `/upload` | Ingest a new document into the pipeline |
+| GET | `/health` | Health check |
 
-## Tests
+## Contributing
 
-```bash
-python -m pytest tests
-```
-
-56 tests cover SQL safety, retrieval scoring, every verification check, planner validation and refusals, evaluation metrics, and full pipeline runs with fake LLM and database calls (no API key needed), including the parallel branches and the revision loop.
-
-## Project structure
-
-```
-backend/      FastAPI app (/query, /investigation/{id}, /logs/{id}, /health)
-core/         graph.py (LangGraph), planner, sql_agent, retrieval_agent,
-              fusion_agent, verification_agent, report_generator,
-              execution_logger, llm.py (OpenAI wrapper with cost tracking), db.py
-database/     schema.sql
-docker/       docker-compose.yml (Postgres + pgvector)
-evaluation/   benchmark.jsonl, metrics.py, run_eval.py, report.md, results/
-frontend/     Streamlit UI
-ingestion/    synthetic_data.py, seed_pipeline.py, ingest_document.py, documents/
-tests/        unit and pipeline tests
-```
-
-## Limitations and next steps
-
-- The dataset is synthetic and small (about 10K rows, 8 documents). The next step is a larger corpus to test retrieval at scale.
-- Open-ended "why" answers score partial credit 33% of the time, usually from comparing the wrong time periods.
-- Execution accuracy can't catch a wrong SQL query on open-ended questions that have no gold query.
-- Containerizing the backend and frontend in Docker Compose alongside Postgres.
+Contributions are welcome! Please open an issue to discuss proposed changes, or submit a pull request.
 
 ## License
 
-MIT
+See the [LICENSE](./LICENSE) file.

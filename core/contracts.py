@@ -1,133 +1,57 @@
-from dataclasses import dataclass
-from typing import List, Optional, Dict, Any
+"""
+Input/output contracts for every agent. Each agent is a function that takes
+and returns these shapes, which is what makes the pipeline deterministic and
+testable stage by stage.
+"""
+from typing import List, Optional, TypedDict
 
 
-# =========================
-# 1. USER INPUT CONTRACT
-# =========================
-
-@dataclass
-class QueryRequest:
-    """
-    Raw user query entering the system
-    """
-    question: str
+class PlanStep(TypedDict):
+    step: int
+    tool: str     # "sql" | "retrieval"
+    action: str   # plain-English description, never SQL
 
 
-# =========================
-# 2. INTENT CLASSIFICATION
-# =========================
-
-@dataclass
-class Intent:
-    """
-    Output of Intent Router
-    Determines which subsystems to activate
-    """
-    sql_needed: bool
-    retrieval_needed: bool
-    priority: str  # low | medium | high
-
-
-# =========================
-# 3. PLANNING STRUCTURE
-# =========================
-
-@dataclass
-class PlanStep:
-    """
-    Single step in execution plan
-    """
-    step_id: int
-    action: str
-    description: str
-
-
-@dataclass
-class ExecutionPlan:
-    """
-    Structured multi-step plan
-    produced by Planner Agent
-    """
+class Plan(TypedDict):
+    query: str
+    intent: str   # "sql" | "retrieval" | "hybrid"
     steps: List[PlanStep]
 
 
-# =========================
-# 4. SQL OUTPUT CONTRACT
-# =========================
-
-@dataclass
-class SQLResult:
-    """
-    Output of SQL Agent execution
-    """
-    query: str
-    results: List[Dict[str, Any]]
-    source_table: str
+class SQLEvidence(TypedDict):
+    evidence_id: str          # "sql:1"
+    action: str
+    sql: Optional[str]
+    columns: List[str]
+    rows: List[list]
+    row_count: int
+    truncated: bool
+    error: Optional[str]
+    attempts: int
 
 
-# =========================
-# 5. RETRIEVAL CONTRACT
-# =========================
-
-@dataclass
-class RetrievedChunk:
-    """
-    Single document chunk from vector DB
-    """
+class DocumentEvidence(TypedDict):
+    evidence_id: str          # "doc:1"
     chunk_id: str
     content: str
-    score: float
     source: str
+    department: str
+    entity: str
+    vector_score: float
+    bm25_score: float
+    rrf_score: float
 
 
-@dataclass
-class RetrievalResult:
-    """
-    Output of Retrieval Agent
-    """
-    chunks: List[RetrievedChunk]
+class Claim(TypedDict):
+    id: str
+    type: str                 # "fact" | "inference"
+    statement: str
+    evidence_ids: List[str]
 
 
-# =========================
-# 6. EVIDENCE LAYER
-# =========================
-
-@dataclass
-class Evidence:
-    """
-    Canonical evidence unit for verification + reporting
-    """
-    source: str
-    content: str
-    evidence_type: str  # sql | document
-
-
-# =========================
-# 7. FUSION OUTPUT
-# =========================
-
-@dataclass
-class FusionResult:
-    """
-    Combined structured + unstructured intelligence
-    """
-    summary: str
-    evidence: List[Evidence]
-
-
-# =========================
-# 8. FINAL REPORT
-# =========================
-
-@dataclass
-class FinalReport:
-    """
-    Final output returned to user
-    """
-    executive_summary: str
-    root_cause: str
-    timeline: List[str]
-    metrics: Dict[str, Any]
-    evidence: List[Evidence]
-    confidence_score: float
+class CheckedClaim(Claim):
+    status: str               # "supported" | "needs_review" | "unsupported"
+    reason: str
+    valid_evidence_ids: List[str]
+    invalid_evidence_ids: List[str]
+    ungrounded_numbers: List[str]

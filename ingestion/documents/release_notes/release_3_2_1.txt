@@ -1,0 +1,18 @@
+Product Release Notes v3.2.1 (Hotfix)
+
+Release Date:
+May 2 2025
+
+
+Fixes:
+
+- Rolled back the automatic payment retry changes introduced in v3.2.
+- Added idempotency keys to payment requests so a retried payment cannot charge a customer twice.
+
+
+Affected Service:
+Checkout Service
+
+
+Status:
+Deployed to all regions. Duplicate payment reports in Europe are declining.

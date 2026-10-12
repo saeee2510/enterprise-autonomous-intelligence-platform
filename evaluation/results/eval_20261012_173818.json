@@ -1,0 +1,160 @@
+{
+  "summary": {
+    "questions": 3,
+    "pipeline_errors": 0,
+    "answer_accuracy": 1.0,
+    "answer_accuracy_by_category": {
+      "sql": 1.0
+    },
+    "sql_execution_accuracy": 1.0,
+    "routing_accuracy": 1.0,
+    "retrieval_recall_at_k": null,
+    "retrieval_mrr": null,
+    "root_cause_accuracy": null,
+    "distractor_resistance": null,
+    "false_premise_rejection": null,
+    "unsupported_claim_rate": 0.0,
+    "summaries_with_ungrounded_numbers": 0.0,
+    "revision_rate": 0.0,
+    "sql_self_correction_count": 1,
+    "sql_error_count": 0,
+    "safety_pass_rate": null,
+    "latency_p50_s": 4.886699999999999,
+    "latency_p95_s": 5.1587,
+    "avg_llm_calls": 4.333,
+    "avg_tokens": 2823.333,
+    "avg_cost_usd": 0.000517,
+    "total_cost_usd": 0.0016
+  },
+  "rows": [
+    {
+      "id": "sql_01",
+      "category": "sql",
+      "question": "How many support tickets were filed in total?",
+      "gold_value": [
+        [
+          897
+        ]
+      ],
+      "latency_ms": 4773.6,
+      "llm_calls": 4,
+      "tokens": 2436,
+      "cost_usd": 0.000433,
+      "revisions": 0,
+      "planned_tools": [
+        "sql"
+      ],
+      "summary": "A total of 897 support tickets were filed.",
+      "root_cause": "Not established by the evidence",
+      "claims": 1,
+      "unsupported_claims": 0,
+      "summary_consistent": true,
+      "sql_errors": 0,
+      "sql_self_corrected": 0,
+      "ungrounded_summary_numbers": [],
+      "system_sql": [
+        {
+          "action": "count the total number of support tickets filed.",
+          "sql": "SELECT COUNT(*) AS total_support_tickets\nFROM support_tickets",
+          "rows": [
+            [
+              897
+            ]
+          ],
+          "error": null
+        }
+      ],
+      "retrieved_sources": [],
+      "routing_correct": true,
+      "sql_correct": true,
+      "grade": "correct",
+      "grade_reason": "The system answer correctly states that a total of 897 support tickets were filed, which matches the reference answer."
+    },
+    {
+      "id": "sql_02",
+      "category": "sql",
+      "question": "How many orders were placed by customers in Europe?",
+      "gold_value": [
+        [
+          3101
+        ]
+      ],
+      "latency_ms": 4886.7,
+      "llm_calls": 4,
+      "tokens": 2518,
+      "cost_usd": 0.000474,
+      "revisions": 0,
+      "planned_tools": [
+        "sql"
+      ],
+      "summary": "The evidence shows that a total of 3,101 orders were placed by customers in Europe.",
+      "root_cause": "Not established by the evidence",
+      "claims": 1,
+      "unsupported_claims": 0,
+      "summary_consistent": true,
+      "sql_errors": 0,
+      "sql_self_corrected": 0,
+      "ungrounded_summary_numbers": [],
+      "system_sql": [
+        {
+          "action": "count the total number of orders placed by customers in Europe.",
+          "sql": "WITH europe_customers AS (\n    SELECT id\n    FROM customers\n    WHERE region = 'EU'\n),\neurope_orders AS (\n    SELECT COUNT(*) AS total_orders\n    FROM orders\n    WHERE customer_id IN (SELECT id FROM europe_customers)\n)\nSELECT total_orders\nFROM europe_orders",
+          "rows": [
+            [
+              3101
+            ]
+          ],
+          "error": null
+        }
+      ],
+      "retrieved_sources": [],
+      "routing_correct": true,
+      "sql_correct": true,
+      "grade": "correct",
+      "grade_reason": "The system answer accurately states that a total of 3,101 orders were placed by customers in Europe, which matches the reference answer."
+    },
+    {
+      "id": "sql_03",
+      "category": "sql",
+      "question": "What was the total net revenue in APAC?",
+      "gold_value": [
+        [
+          589180.0
+        ]
+      ],
+      "latency_ms": 5188.9,
+      "llm_calls": 5,
+      "tokens": 3516,
+      "cost_usd": 0.000644,
+      "revisions": 0,
+      "planned_tools": [
+        "sql"
+      ],
+      "summary": "The total net revenue in APAC is 589180.0.",
+      "root_cause": "Not established by the evidence",
+      "claims": 1,
+      "unsupported_claims": 0,
+      "summary_consistent": true,
+      "sql_errors": 0,
+      "sql_self_corrected": 1,
+      "ungrounded_summary_numbers": [],
+      "system_sql": [
+        {
+          "action": "calculate the total net revenue in APAC",
+          "sql": "WITH apac_revenue AS (\n    SELECT SUM(total_revenue) AS total_net_revenue\n    FROM revenue\n    WHERE region = 'APAC'\n)\nSELECT ROUND(total_net_revenue::numeric, 2) AS total_net_revenue_apac\nFROM apac_revenue",
+          "rows": [
+            [
+              589180.0
+            ]
+          ],
+          "error": null
+        }
+      ],
+      "retrieved_sources": [],
+      "routing_correct": true,
+      "sql_correct": true,
+      "grade": "correct",
+      "grade_reason": "The system answer correctly states the total net revenue in APAC as 589180.0, which matches the reference answer."
+    }
+  ]
+}

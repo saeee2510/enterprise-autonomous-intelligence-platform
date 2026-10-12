@@ -1,3 +1,4 @@
-from ingestion.rag import get_embedding
+from core.llm import embed
 
-print(len(get_embedding("refund issue")))
+vector, usage = embed("refund issue")
+print(len(vector), usage)

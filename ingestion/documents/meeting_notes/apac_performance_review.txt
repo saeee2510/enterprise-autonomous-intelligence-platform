@@ -1,0 +1,22 @@
+APAC Performance Incident Review
+
+
+Incident:
+
+Elevated dashboard load times for APAC customers between March 10 and March 14 2025.
+
+
+Root Cause:
+
+A misconfigured cache node in the Singapore data center.
+
+
+Impact:
+
+Performance-related support tickets increased during the incident window.
+No measurable impact on orders or revenue.
+
+
+Resolution:
+
+Cache node replaced on March 14. Load times returned to normal.

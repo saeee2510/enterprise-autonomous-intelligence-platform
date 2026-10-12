@@ -29,7 +29,10 @@ def extract_entity(filename):
     if "customer" in filename:
         return "customer_feedback"
 
-    if "engineering" in filename:
+    if "engineering" in filename or "review" in filename:
         return "engineering_incident"
+
+    if "campaign" in filename:
+        return "marketing_campaign"
 
     return "unknown"

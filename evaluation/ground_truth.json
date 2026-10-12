@@ -1,0 +1,49 @@
+{
+  "windows": {
+    "pre_release": [
+      "2025-04-01",
+      "2025-04-14"
+    ],
+    "post_release": [
+      "2025-04-15",
+      "2025-04-28"
+    ]
+  },
+  "release_date": "2025-04-15",
+  "hotfix_date": "2025-05-02",
+  "root_cause": "Release v3.2 payment-retry bug caused duplicate charges and checkout failures for EU customers",
+  "regions": {
+    "NA": {
+      "net_revenue_pre": 148114.3,
+      "net_revenue_post": 177448.5,
+      "net_revenue_change_pct": 19.8,
+      "tickets_pre": 46,
+      "tickets_post": 38,
+      "tickets_change_pct": -17.4,
+      "top_ticket_category_post": "account"
+    },
+    "EU": {
+      "net_revenue_pre": 132257.0,
+      "net_revenue_post": 99476.0,
+      "net_revenue_change_pct": -24.8,
+      "tickets_pre": 44,
+      "tickets_post": 140,
+      "tickets_change_pct": 218.2,
+      "top_ticket_category_post": "billing"
+    },
+    "APAC": {
+      "net_revenue_pre": 90160.0,
+      "net_revenue_post": 86707.0,
+      "net_revenue_change_pct": -3.8,
+      "tickets_pre": 26,
+      "tickets_post": 29,
+      "tickets_change_pct": 11.5,
+      "top_ticket_category_post": "account"
+    }
+  },
+  "duplicate_charge_refunds_total": 50,
+  "duplicate_charge_refund_amount_total": 15425.0,
+  "total_tickets": 962,
+  "total_orders": 9372,
+  "apac_performance_tickets_incident_window": 42
+}

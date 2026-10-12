@@ -1,0 +1,124 @@
+{
+  "summary": {
+    "questions": 3,
+    "pipeline_errors": 0,
+    "answer_accuracy": 0.0,
+    "answer_accuracy_by_category": {
+      "sql": 0.0
+    },
+    "sql_execution_accuracy": 0.0,
+    "routing_accuracy": 1.0,
+    "retrieval_recall_at_k": null,
+    "retrieval_mrr": null,
+    "root_cause_accuracy": null,
+    "distractor_resistance": null,
+    "false_premise_rejection": null,
+    "unsupported_claim_rate": 0.333,
+    "summaries_with_ungrounded_numbers": 0.333,
+    "revision_rate": 1.0,
+    "sql_self_correction_count": 1,
+    "sql_error_count": 0,
+    "safety_pass_rate": null,
+    "latency_p50_s": 7.3636,
+    "latency_p95_s": 15.2595,
+    "avg_llm_calls": 6.333,
+    "avg_tokens": 4581,
+    "avg_cost_usd": 0.001013,
+    "total_cost_usd": 0.003
+  },
+  "rows": [
+    {
+      "id": "sql_01",
+      "category": "sql",
+      "question": "How many support tickets were filed in total?",
+      "gold_value": [
+        [
+          897
+        ]
+      ],
+      "latency_ms": 6882.4,
+      "llm_calls": 6,
+      "tokens": 3630,
+      "cost_usd": 0.000705,
+      "revisions": 1,
+      "planned_tools": [
+        "sql"
+      ],
+      "summary": "The total number of support tickets filed is 887, as indicated by the SQL evidence.",
+      "root_cause": "Not established by the evidence",
+      "claims": 1,
+      "unsupported_claims": 0,
+      "summary_consistent": true,
+      "sql_errors": 0,
+      "sql_self_corrected": 0,
+      "ungrounded_summary_numbers": [],
+      "routing_correct": true,
+      "sql_correct": false,
+      "grade": "incorrect",
+      "grade_reason": "The system answer states that the total number of support tickets filed is 887, which contradicts the reference answer that states the total is 897."
+    },
+    {
+      "id": "sql_02",
+      "category": "sql",
+      "question": "How many orders were placed by customers in Europe?",
+      "gold_value": [
+        [
+          3101
+        ]
+      ],
+      "latency_ms": 7363.6,
+      "llm_calls": 6,
+      "tokens": 3723,
+      "cost_usd": 0.000739,
+      "revisions": 1,
+      "planned_tools": [
+        "sql"
+      ],
+      "summary": "The total number of orders placed by customers in Europe is 3065. This count is based on the SQL evidence provided for the specified date range.",
+      "root_cause": "Not established by the evidence",
+      "claims": 1,
+      "unsupported_claims": 0,
+      "summary_consistent": true,
+      "sql_errors": 0,
+      "sql_self_corrected": 0,
+      "ungrounded_summary_numbers": [],
+      "routing_correct": true,
+      "sql_correct": false,
+      "grade": "incorrect",
+      "grade_reason": "The system answer states that the total number of orders is 3065, which contradicts the reference answer of 3101."
+    },
+    {
+      "id": "sql_03",
+      "category": "sql",
+      "question": "What was the total net revenue in APAC?",
+      "gold_value": [
+        [
+          589180.0
+        ]
+      ],
+      "latency_ms": 16136.8,
+      "llm_calls": 7,
+      "tokens": 6390,
+      "cost_usd": 0.001595,
+      "revisions": 1,
+      "planned_tools": [
+        "sql"
+      ],
+      "summary": "The total net revenue in APAC from 2025-03-01 to 2025-05-31 is 1,000,000.0. This total is derived from the weekly net revenue figures provided in the SQL evidence.",
+      "root_cause": "Not established by the evidence",
+      "claims": 1,
+      "unsupported_claims": 1,
+      "summary_consistent": false,
+      "sql_errors": 0,
+      "sql_self_corrected": 1,
+      "ungrounded_summary_numbers": [
+        "-01",
+        "1000000.0"
+      ],
+      "routing_correct": true,
+      "sql_correct": false,
+      "grade": "incorrect",
+      "grade_reason": "The system answer states a total net revenue of 1,000,000.0, which contradicts the reference answer of 589180.0."
+    }
+  ]
+}

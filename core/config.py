@@ -1,6 +1,10 @@
 import os
 from dataclasses import dataclass
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 
 @dataclass
 class Config:
@@ -31,7 +35,8 @@ class Config:
     # =========================
     # LLM CONFIG
     # =========================
-    LLM_MODEL: str = os.getenv("LLM_MODEL", "gpt-4.1-mini")
+    OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
+    LLM_MODEL: str = os.getenv("LLM_MODEL", "gpt-4o-mini")
     TEMPERATURE: float = float(os.getenv("TEMPERATURE", 0.1))
 
     # =========================

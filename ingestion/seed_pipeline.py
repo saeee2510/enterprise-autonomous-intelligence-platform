@@ -1,88 +1,53 @@
-import psycopg2
-from ingestion.fake_data_generator import (
-    generate_customers,
-    generate_products,
-    generate_orders,
-    generate_support_tickets
-)
+"""
+Seeds Postgres with the causal synthetic dataset and writes the ground-truth
+facts used by the evaluation.
 
-conn = psycopg2.connect(
-    dbname="eaip",
-    user="saee2510",
-    password="None",
-    host="127.0.0.1",
-    port=5432
-)
+Run from the project root:
+    python -m ingestion.seed_pipeline
+"""
+import json
+from pathlib import Path
 
-cur = conn.cursor()
+from psycopg2.extras import execute_values
 
+from core.db import get_connection
+from ingestion.synthetic_data import generate
 
-# -----------------------------
-# SEED CUSTOMERS
-# -----------------------------
-def seed_customers():
-    customers = generate_customers()
+GROUND_TRUTH_PATH = Path("evaluation/ground_truth.json")
 
-    for c in customers:
-        cur.execute(
-            "INSERT INTO customers (name, region, signup_date) VALUES (%s, %s, %s)",
-            c
-        )
+TABLES = {
+    "customers": "(id, name, region, signup_date)",
+    "products": "(id, name, category, price)",
+    "orders": "(id, customer_id, product_id, quantity, revenue, order_date)",
+    "refunds": "(id, order_id, amount, reason, created_at)",
+    "support_tickets": "(id, customer_id, severity, category, created_at, resolution_time)",
+    "revenue": "(id, region, date, total_revenue)",
+}
 
 
-# -----------------------------
-# SEED PRODUCTS
-# -----------------------------
-def seed_products():
-    products = generate_products()
+def seed():
+    data = generate()
+    conn = get_connection(with_vector=False)
+    cur = conn.cursor()
 
-    for p in products:
-        cur.execute(
-            "INSERT INTO products (name, category, price) VALUES (%s, %s, %s)",
-            p
-        )
+    # wipe old rows so reseeding is repeatable
+    cur.execute("TRUNCATE " + ", ".join(TABLES) + " RESTART IDENTITY CASCADE;")
 
-
-# -----------------------------
-# SEED ORDERS
-# -----------------------------
-def seed_orders():
-    customers = list(range(1, 200))
-    products = list(range(1, 4))
-
-    orders = generate_orders(customers, products)
-
-    for o in orders:
-        cur.execute(
-            "INSERT INTO orders (customer_id, product_id, quantity, revenue, order_date) VALUES (%s,%s,%s,%s,%s)",
-            o
-        )
-
-
-# -----------------------------
-# SEED SUPPORT TICKETS
-# -----------------------------
-def seed_tickets():
-    tickets = generate_support_tickets()
-
-    for t in tickets:
-        cur.execute(
-            "INSERT INTO support_tickets (customer_id, severity, category, created_at, resolution_time) VALUES (%s,%s,%s,%s,%s)",
-            t
-        )
-
-
-# -----------------------------
-# MAIN PIPELINE
-# -----------------------------
-if __name__ == "__main__":
-    seed_customers()
-    seed_products()
-    seed_orders()
-    seed_tickets()
+    for table, cols in TABLES.items():
+        execute_values(cur, f"INSERT INTO {table} {cols} VALUES %s", data[table])
+        # keep SERIAL counters in sync with the explicit ids we inserted
+        cur.execute(f"SELECT setval(pg_get_serial_sequence('{table}', 'id'), "
+                    f"COALESCE((SELECT MAX(id) FROM {table}), 1));")
+        print(f"{table}: {len(data[table])} rows")
 
     conn.commit()
     cur.close()
     conn.close()
 
-    print("Enterprise dataset seeded successfully.")
+    GROUND_TRUTH_PATH.parent.mkdir(exist_ok=True)
+    GROUND_TRUTH_PATH.write_text(json.dumps(data["ground_truth"], indent=2))
+    print(f"Ground truth written to {GROUND_TRUTH_PATH}")
+
+
+if __name__ == "__main__":
+    seed()
